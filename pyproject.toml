@@ -1,7 +1,7 @@
 [project]
 name = "sideout-analytics"
 version = "0.1.0"
-description = "Sideout Analytics is a Python package that provides tools for analyzing and visualizing data related NCAA women's volleyball."
+description = "Tools for analyzing and visualizing NCAA women's volleyball data."
 readme = "README.md"
 authors = [
     { name = "Ethan", email = "ethanmetcalf22@gmail.com" }
@@ -38,4 +38,7 @@ line-length = 79
 extend-select = ["F", "S", "I", "PERF", "E", "W", "UP", "N", "ANN", "DTZ", "SIM", "PTH"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101", "ANN"]
+"tests/*" = [
+    "S101",
+    "ANN",
+]
