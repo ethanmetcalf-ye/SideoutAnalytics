@@ -1,9 +1,11 @@
 # NCAA API: Volleyball Endpoints
 
+Copied from the prototype repository; last checked against the live API on October 6, 2026.
+
 Unofficial NCAA data API by henrygd. It proxies data from ncaa.com.
 
-- Docs: `https://ncaa-api.henrygd.me/openapi`
-- Source: `https://github.com/henrygd/ncaa-api`
+- Docs: https://ncaa-api.henrygd.me/openapi
+- Source: https://github.com/henrygd/ncaa-api
 - Base URL: `https://ncaa-api.henrygd.me`
 - Auth: none
 - Rate limit: 3 requests/second per IP on the public instance. The limit is not in the API's code, so a self-hosted instance (`docker run --rm -p 3000:3000 henrygd/ncaa-api`) has none.
@@ -258,4 +260,5 @@ for g in games:
     for team in box["teamBoxscore"]:
         for p in team["playerStats"]:
             print(p["lastName"], p["kills"], p["digs"], p["hittingPercentage"])
+
 ```
