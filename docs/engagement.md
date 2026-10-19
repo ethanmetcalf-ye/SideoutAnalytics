@@ -26,7 +26,7 @@ unmet checks. Each check is measurable:
 
 | Milestone | Acceptance check |
 | --- | --- |
-| Data pipeline | Poll without manual triggering; display each result within 15 minutes after the first successful poll that returns it. Retain raw responses and record the successful poll and display times; show last-update time and stale status. |
+| Data pipeline | Poll automatically at intervals no longer than 60 minutes; display each result within 15 minutes after the first successful poll that returns it. Retain raw responses and record poll and display times; show last-update time and stale status. |
 | Ratings model | On all eligible completed matches in a chronological 2025 holdout, achieve a lower Brier score than a baseline that predicts each team's pre-match season win percentage. Report the sample size and both scores; if the model's score is not lower, this check fails and the report states so. |
 | Public frontend and predictions | Load the site without login; show statistics and generate a prediction at least 30 minutes before every scheduled match for which schedule and input data are available. |
 | Tournament launch | Simulate the bracket within five minutes after bracket data is available to the site. |
