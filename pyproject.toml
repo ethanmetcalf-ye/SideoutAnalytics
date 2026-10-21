@@ -7,7 +7,10 @@ authors = [
     { name = "Ethan", email = "ethanmetcalf22@gmail.com" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "pydantic>=2.14.1",
+    "pydantic-settings>=2.16.1",
+]
 
 [project.scripts]
 sideout-analytics = "sideout_analytics:main"

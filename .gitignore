@@ -4,3 +4,5 @@ __pycache__
 data/*
 # Generated cache files and directories
 *_cache
+
+.vscode
