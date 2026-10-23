@@ -5,4 +5,4 @@ data/*
 # Generated cache files and directories
 *_cache
 
-.vscode
+docs/notes/*
