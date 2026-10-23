@@ -1,6 +1,6 @@
 # ADR-002: Store Match Stats as Rows With the Box Score as Source of Truth
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
