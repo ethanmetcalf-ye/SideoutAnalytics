@@ -19,9 +19,9 @@ box score a usable check on the play-by-play.
 ## Decision
 
 We will parse API responses into relational tables (`box_score_line`,
-`team_set_stats`, `play`) and keep the raw responses separately, rather than
-storing stats as JSON. Only counts are stored; rates and totals are
-calculated at query time.
+`team_set_stats`, `play`, `play_player`) rather than storing stats as JSON,
+and keep the raw responses as files on disk. Every count the API provides is
+stored; rates and totals are calculated at query time.
 
 We will treat the box score as the source of truth for match totals. The
 play-by-play is used for set-level and rally-level stats only when its totals
