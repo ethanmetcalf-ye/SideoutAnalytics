@@ -6,3 +6,4 @@ data/*
 *_cache
 
 .vscode
+schema-draft.md
