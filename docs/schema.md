@@ -189,7 +189,8 @@ last updated it, and `result_first_seen_at`.
 
 Types are Postgres types. Columns are `NOT NULL` unless marked nullable. IDs
 are `bigint` identity columns unless noted. Check constraints are listed in
-[Check constraints](#check-constraints).
+[Check constraints](#check-constraints), and foreign key delete rules in
+[Delete behavior](#delete-behavior).
 
 ### season
 
@@ -293,7 +294,7 @@ One row per match, including scheduled and live matches. The teams are in
 | pbp_reconciled | boolean | Nullable. Whether play-by-play totals match the box score. NULL if not checked |
 | pbp_parser_version | text | Nullable. Parser version that set `pbp_reconciled` |
 | result_first_seen_at | timestamptz | Nullable. First poll that returned the final result |
-| updated_at | timestamptz | Last time the row changed |
+| updated_at | timestamptz | Last time the row changed. Defaults to `now()` |
 | ingest_run_id | bigint | FK → `ingest_run`. Run that last updated the row |
 
 ### match_team
@@ -477,6 +478,28 @@ W1-05 implements these as `CHECK` constraints.
 | `team_rank` | `ranking >= 1`, `total_points >= 0`, `first_place_votes >= 0` |
 | `ingest_run` | `status IN ('running', 'succeeded', 'failed')`, `finished_at >= started_at` |
 | `prediction` | `home_win_probability BETWEEN 0 AND 1` |
+
+## Delete behavior
+
+Foreign keys cascade along ownership and block everywhere else.
+
+- **Cascade:** a match owns its per-match rows. Deleting a `match` deletes its
+  `match_team`, `box_score_line`, `team_set_stats`, `play`, and `play_player`
+  rows. `box_score_line` and `team_set_stats` cascade through `match_team`,
+  and `play_player` through `play`.
+- **Block:** every other foreign key uses the Postgres default,
+  `ON DELETE NO ACTION`. Deleting a row that is still referenced fails, for
+  example a `team` with matches or a `player` with box score lines. This
+  includes `play`'s references to `match_team`, so removing a team from a
+  match never silently deletes its rallies.
+- **Matches with history:** `prediction` and `raw_response` reference `match`
+  without cascading, so a match with predictions or saved responses can't be
+  deleted until those rows are handled. Predictions are append-only history,
+  so this is deliberate.
+- **Why `NO ACTION`, not `RESTRICT`:** `NO ACTION` is checked at the end of
+  the statement, after cascades finish. `RESTRICT` is checked immediately and
+  could reject a match delete depending on the order Postgres processes the
+  cascades.
 
 ## Relationships
 
