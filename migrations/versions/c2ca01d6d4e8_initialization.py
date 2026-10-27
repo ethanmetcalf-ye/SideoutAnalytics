@@ -133,7 +133,12 @@ def upgrade() -> None:
         sa.Column(
             "result_first_seen_at", sa.DateTime(timezone=True), nullable=True
         ),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.Column("ingest_run_id", sa.BigInteger(), nullable=False),
         sa.ForeignKeyConstraint(
             ["ingest_run_id"],

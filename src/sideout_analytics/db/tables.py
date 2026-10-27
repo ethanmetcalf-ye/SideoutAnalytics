@@ -5,10 +5,11 @@ Copying a table from schema.md:
   most columns need no mapped_column() at all: Mapped[str] is text.
 - "Nullable" columns are Mapped[X | None]; everything else is NOT NULL.
 - Id, Year and Small cover the column shapes that aren't plain bigint/text.
-- Allowed-value lists are StrEnums, stored as text with a CHECK constraint.
+- Allowed-value lists are StrEnums, stored as varchar sized to the longest
+  value, with a CHECK constraint.
 - The schema.md "Check constraints" section goes in __table_args__.
-- Foreign keys use the database default (no delete while referenced),
-  except child rows of a match, which cascade.
+- Delete rules follow schema.md "Delete behavior".
+- Schema declaration only: queries are handwritten SQL, so no relationship().
 """
 
 import enum
@@ -31,6 +32,7 @@ from sqlalchemy import (
     SmallInteger,
     Text,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -72,7 +74,7 @@ class IngestStatus(enum.StrEnum):
 
 
 def _text_enum(enum_cls: type[enum.StrEnum]) -> Enum:
-    """Store enum values ("d1", not "D1") as text with a CHECK constraint."""
+    """Store enum values ("d1", not "D1") as varchar with a CHECK."""
     return Enum(
         enum_cls,
         name=enum_cls.__name__.lower(),
@@ -235,7 +237,7 @@ class Match(Base):
     pbp_reconciled: Mapped[bool | None]
     pbp_parser_version: Mapped[str | None]
     result_first_seen_at: Mapped[datetime | None]
-    updated_at: Mapped[datetime]
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
     ingest_run_id: Mapped[int] = mapped_column(
         ForeignKey("ingest_run.ingest_run_id")
     )

@@ -54,6 +54,9 @@ Add dependencies with `uv add <pkg>` (or `uv add --dev <pkg>`). Never edit
   contradicts ADR-002 needs a new ADR.
 - Store every count the source provides; calculate rates and totals at query
   time. Raw API responses go to the on-disk cache, never into the database.
+- Tables in `src/sideout_analytics/db/tables.py` are ORM classes used only to
+  declare the schema. Queries are handwritten SQL; don't add `relationship()`
+  or ORM queries.
 
 ## Workflow
 
