@@ -46,9 +46,11 @@ Add dependencies with `uv add <pkg>` (or `uv add --dev <pkg>`). Never edit
 - Ruff config in `pyproject.toml` is the style guide: 79-char lines, type
   annotations required outside `tests/`, `pathlib` over `os.path`,
   timezone-aware datetimes.
-- Tests must not depend on the developer's `.env` or shell. Clear settings
-  env vars and `chdir` to `tmp_path` (see `isolated_env` in
-  `tests/test_settings.py`), and call `get_settings.cache_clear()`.
+- Tests must not depend on the developer's `.env` or shell. Use the
+  `isolated_env` fixture in `tests/conftest.py`: it clears settings env vars,
+  `chdir`s to `tmp_path`, and calls `get_settings.cache_clear()`.
+- Tests never touch the network or sleep. Pass `httpx.MockTransport` to the
+  API client and record sleeps instead of waiting.
 - Record significant design decisions as a new ADR.
 - Schema changes update `docs/schema.md` in the same PR. A change that
   contradicts ADR-002 needs a new ADR.

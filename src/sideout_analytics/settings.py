@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     database_url: str
     ncaa_base_api_url: str = "https://ncaa-api.henrygd.me"
     log_level: typing.Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    useragent_id: str = (
+        "sideout-analytics/0.1 "
+        "(+https://github.com/ethanmetcalf-ye/SideoutAnalytics)"
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
