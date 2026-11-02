@@ -77,14 +77,16 @@ def api_env(monkeypatch, isolated_env):
         monkeypatch.setenv(name, value)
 
 
-# 200 returns the response on the first try with no retry waits
-async def test_client_returns_response_on_200() -> None:
-    mock_api = MockApi(httpx.Response(200, json={"games": []}))
+# 200 returns the raw body on the first try with no retry waits
+# body is checked byte for byte since it is cached as is
+async def test_client_returns_raw_body_on_200() -> None:
+    raw_body = b'{"games": [], "updated_at": "2026-11-01"}'
+    mock_api = MockApi(httpx.Response(200, content=raw_body))
 
     async with mock_api.client() as client:
-        response = await client.get_requests_async("/scoreboard")
+        body = await client.get_requests_async("/scoreboard")
 
-    assert response.json() == {"games": []}
+    assert body == raw_body
     assert len(mock_api.requests) == 1
     assert mock_api.sleeps == []
 
@@ -116,26 +118,28 @@ async def test_client_retries_unavailable(status_code) -> None:
     mock_api = MockApi(
         httpx.Response(status_code),
         httpx.Response(status_code),
-        httpx.Response(200),
+        httpx.Response(200, content=b"ok"),
     )
 
     async with mock_api.client() as client:
-        response = await client.get_requests_async("/scoreboard")
+        body = await client.get_requests_async("/scoreboard")
 
-    assert response.status_code == 200
+    assert body == b"ok"
     assert len(mock_api.requests) == 3
     assert len(mock_api.sleeps) == 2
 
 
-# default of 4 attempts, then the last error is reraised
+# default of 4 attempts, then raises FailedFetchError with the last
+# retryable error kept as the cause
 async def test_client_stops_after_max_retries() -> None:
     mock_api = MockApi(*[httpx.Response(503)] * 4)
 
     async with mock_api.client() as client:
-        with pytest.raises(ingestion.RetryableFetchError):
+        with pytest.raises(ingestion.FailedFetchError) as exc_info:
             await client.get_requests_async("/scoreboard")
 
     assert len(mock_api.requests) == 4
+    assert isinstance(exc_info.value.__cause__, ingestion.RetryableFetchError)
 
 
 # max_retries passed in replaces the default
@@ -143,7 +147,7 @@ async def test_client_max_retries_override() -> None:
     mock_api = MockApi(httpx.Response(503), httpx.Response(503))
 
     async with mock_api.client(max_retries=2) as client:
-        with pytest.raises(ingestion.RetryableFetchError):
+        with pytest.raises(ingestion.FailedFetchError):
             await client.get_requests_async("/scoreboard")
 
     assert len(mock_api.requests) == 2
@@ -160,27 +164,31 @@ async def test_client_max_retries_override() -> None:
     ids=lambda error: type(error).__name__,
 )
 async def test_client_retries_transport_error(error) -> None:
-    mock_api = MockApi(error, httpx.Response(200))
+    mock_api = MockApi(error, httpx.Response(200, content=b"ok"))
 
     async with mock_api.client() as client:
-        response = await client.get_requests_async("/scoreboard")
+        body = await client.get_requests_async("/scoreboard")
 
-    assert response.status_code == 200
+    assert body == b"ok"
     assert len(mock_api.requests) == 2
 
 
 # the original httpx error stays attached so the real cause is visible
+# FailedFetchError <- RetryableFetchError <- httpx.ReadTimeout
 async def test_client_transport_error_keeps_cause() -> None:
     mock_api = MockApi(*[httpx.ReadTimeout("slow")] * 4)
 
     async with mock_api.client() as client:
-        with pytest.raises(ingestion.RetryableFetchError) as exc_info:
+        with pytest.raises(ingestion.FailedFetchError) as exc_info:
             await client.get_requests_async("/scoreboard")
 
-    assert isinstance(exc_info.value.__cause__, httpx.ReadTimeout)
+    retryable_error = exc_info.value.__cause__
+    assert isinstance(retryable_error, ingestion.RetryableFetchError)
+    assert isinstance(retryable_error.__cause__, httpx.ReadTimeout)
 
 
 # 502 on match endpoints means the match is not played yet, so no retry
+# and NotAvailableYetError instead of a failure
 @pytest.mark.parametrize(
     "path",
     [
@@ -194,7 +202,7 @@ async def test_client_no_retry_unplayed_match(path) -> None:
 
     async with mock_api.client() as client:
         with pytest.raises(
-            ingestion.FailedFetchError, match="not been played"
+            ingestion.NotAvailableYetError, match="not been played"
         ):
             await client.get_requests_async(path)
 
@@ -230,7 +238,7 @@ async def test_client_backoff_grows() -> None:
     mock_api = MockApi(*[httpx.Response(503)] * 4)
 
     async with mock_api.client() as client:
-        with pytest.raises(ingestion.RetryableFetchError):
+        with pytest.raises(ingestion.FailedFetchError):
             await client.get_requests_async("/scoreboard")
 
     # 2**n seconds plus up to 1 second of jitter, so check a range
@@ -321,6 +329,29 @@ async def test_client_closes_on_exit() -> None:
         assert not client._http.is_closed
 
     assert client._http.is_closed
+
+
+# callers only ever see NotAvailableYetError or FailedFetchError, never the
+# internal RetryableFetchError, whatever the failure
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(503),
+        httpx.Response(429, headers={"Retry-After": "1"}),
+        httpx.ConnectError("refused"),
+        httpx.Response(404),
+        httpx.Response(418),
+    ],
+    ids=["503", "429", "connect_error", "404", "418"],
+)
+async def test_client_never_raises_retryable_error(response) -> None:
+    mock_api = MockApi(*[response] * 4)
+
+    async with mock_api.client() as client:
+        with pytest.raises(ingestion.FailedFetchError) as exc_info:
+            await client.get_requests_async("/scoreboard")
+
+    assert not isinstance(exc_info.value, ingestion.RetryableFetchError)
 
 
 # connection pool is still closed when a request raises inside async with

@@ -20,8 +20,14 @@ class RetryableFetchError(Exception):
 
 
 # Exception class for request calls that fail but should not be retried
-# ex. bad requests, or a match that has not been played yet
+# ex. bad requests
 class FailedFetchError(Exception):
+    pass
+
+
+# Exception class for request calls that fail because the game has not
+# been played yet
+class NotAvailableYetError(Exception):
     pass
 
 
@@ -113,17 +119,18 @@ class Client:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    # performs one request asynchronously and returns the response object if
+    # performs one request asynchronously and returns the raw response body if
     # successful. otherwise, handles bad responses and raises the appropriate
     # error to trigger a retry if needed. Waits on the rate limiter first so
     # retries also count against the limit
-    async def _get_one_request(self, path: str) -> httpx.Response:
+    # Raw bytes are returned so callers can cache them as is before parsing
+    async def _get_one_request(self, path: str) -> bytes:
         async with self._limiter:
             try:
                 response = await self._http.get(path)
             except httpx.TransportError as e:
                 raise RetryableFetchError(
-                    f"Get request to {path} failed with a network error."
+                    f"Get request to {path} failed with a network error. "
                     f"Retrying..."
                 ) from e
         # Retry-After can be secs or an http date, only secs are used for now
@@ -133,36 +140,43 @@ class Client:
             retry_secs = None
 
         if response.status_code == 200:
-            return response
+            return response.content
         elif response.status_code == 502 and (
             "boxscore" in path
             or "play-by-play" in path
             or "team-stats" in path
         ):
-            raise FailedFetchError(
-                f"Get request to {path} failed with status code"
-                f"{response.status_code}.The match has not been played yet..."
+            raise NotAvailableYetError(
+                f"Get request to {path} failed with status code "
+                f"{response.status_code}. The match has not been played yet..."
             )
         elif response.status_code in self._codes["unavailable"]:
             raise RetryableFetchError(
-                f"Get request to {path} failed with status code"
+                f"Get request to {path} failed with status code "
                 f"{response.status_code}. Retrying...",
                 retry_delay_secs=retry_secs,
             )
         elif response.status_code in self._codes["bad_requests"]:
             raise FailedFetchError(
-                f"Get request to {path} failed with status code"
+                f"Get request to {path} failed with status code "
                 f"{response.status_code}. No retry for bad requests..."
             )
         else:
             raise FailedFetchError(
-                f"Get request to {path} failed with status code"
+                f"Get request to {path} failed with status code "
                 f"{response.status_code}."
             )
 
-    # wraps the request function for async retries. Returns the response or
-    # raises the last error once retries run out
-    async def get_requests_async(self, path: str) -> httpx.Response:
-        async for attempt in tenacity.AsyncRetrying(**self.retry_params):
-            with attempt:
-                return await self._get_one_request(path)
+    # wraps the request function for async retries. Returns the raw response
+    # body or raises FailedFetchError once retries run out, with the last
+    # error kept as the cause
+    async def get_requests_async(self, path: str) -> bytes:
+        try:
+            async for attempt in tenacity.AsyncRetrying(**self.retry_params):
+                with attempt:
+                    return await self._get_one_request(path)
+        except RetryableFetchError as e:
+            raise FailedFetchError(
+                f"Get requests to {path} failed after "
+                f"{self.retry_params['stop'].max_attempt_number} attempts..."
+            ) from e
