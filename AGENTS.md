@@ -34,6 +34,7 @@ Add dependencies with `uv add <pkg>` (or `uv add --dev <pkg>`). Never edit
 | --- | --- |
 | `src/sideout_analytics/` | The application package. All code lives here. |
 | `src/sideout_analytics/settings.py` | The only place config is read. Use `get_settings()`; don't read `os.environ` elsewhere. New settings get a field here and an entry in `.env.example`. |
+| `src/sideout_analytics/pipeline/client.py` | HTTP client for the NCAA API: shared rate limit, retries, raw response bytes. Build it with `Client.from_settings()`; all API requests go through it. |
 | `tests/` | pytest tests, one `test_<module>.py` per module. |
 | `docs/adr/` | Architecture decisions, `NNNN-short-title.md`. |
 | `docs/schema.md` | Database design. The source of truth for tables, columns and constraints; migrations implement it. |
