@@ -60,12 +60,15 @@ class RawStore:
         outside the cache directory, since ids parsed from responses end up
         in these paths.
         """
-        endpoint = endpoint.strip("/")
-        parsed_url = urllib.parse.urlsplit(endpoint)
+        # split on ? before stripping so a query value ending in / keeps
+        # it. partition instead of urlsplit, which reads game:1 as a scheme
+        # and //game as a host
+        endpoint_path, _, query = endpoint.partition("?")
+        endpoint_path = endpoint_path.strip("/")
 
-        if parsed_url.path == "":
+        if endpoint_path == "":
             raise ValueError(f"Endpoint {endpoint} cannot be empty...")
-        path = pathlib.PurePosixPath(parsed_url.path)
+        path = pathlib.PurePosixPath(endpoint_path)
 
         # query goes between the name and the suffix so the
         # extension stays last, e.g. 45__page=2.json. keys and values are
@@ -74,9 +77,7 @@ class RawStore:
             f"{urllib.parse.quote(key, safe='')}="
             f"{urllib.parse.quote(value, safe='')}"
             for key, value in sorted(
-                urllib.parse.parse_qsl(
-                    parsed_url.query, keep_blank_values=True
-                )
+                urllib.parse.parse_qsl(query, keep_blank_values=True)
             )
         ]
         query_part = "__" + "__".join(args) if args else ""
@@ -97,9 +98,12 @@ class RawStore:
         """
         returns the cached bytes, or None if nothing is cached yet.
         """
-        if cache_file.is_file():
+        # read and catch instead of is_file() first, so a file removed in
+        # between can't raise
+        try:
             return cache_file.read_bytes()
-        return None
+        except FileNotFoundError:
+            return None
 
     def write_cache_to_disc(
         self, response_content: bytes, cache_file: pathlib.Path
@@ -127,7 +131,9 @@ class RawStore:
                 # and other containers can read the raw data
                 temp_path.chmod(0o644)
                 temp_path.replace(cache_file)
-            except OSError:
+            # BaseException so a Ctrl-C mid write cleans up the temp file
+            # too. always re-raised, nothing is swallowed
+            except BaseException:
                 temp_path.unlink(missing_ok=True)
                 raise
         return cache_file, hash_content(response_content)

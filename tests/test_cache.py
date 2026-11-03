@@ -38,6 +38,11 @@ ENDPOINT_FILES = [
     # a decoded / in a query value stays in the file name instead of
     # pointing at another file
     ("/game/1?x=a%2Fb", "game/1__x=a%2Fb.json"),
+    # a value ending in / keeps it, only the path gets stripped
+    ("/x/y?a=/", "x/y__a=%2F.json"),
+    # : and // are just path characters, not a url scheme or host
+    ("/game:1/boxscore", "game:1/boxscore.json"),
+    ("//game/1", "game/1.json"),
     (
         "/game/1?x=..%2F..%2F2%2Fboxscore",
         "game/1__x=..%2F..%2F2%2Fboxscore.json",
@@ -217,6 +222,24 @@ def test_cache_failed_write_keeps_old_file(raw_store, monkeypatch) -> None:
 
     monkeypatch.setattr(pathlib.Path, "replace", failing_replace)
     with pytest.raises(OSError, match="disk full"):
+        raw_store.write_cache_to_disc(b"new", cache_file)
+    assert cache_file.read_bytes() == b"old"
+    assert list(cache_file.parent.iterdir()) == [cache_file]
+
+
+def test_cache_interrupted_write_cleans_up(raw_store, monkeypatch) -> None:
+    """
+    a Ctrl-C mid write still removes the temp file and keeps the old file,
+    and the KeyboardInterrupt still reaches the caller.
+    """
+    cache_file = raw_store.map_endpoint_cache_file("/game/1/boxscore")
+    raw_store.write_cache_to_disc(b"old", cache_file)
+
+    def interrupted_replace(self, target) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(pathlib.Path, "replace", interrupted_replace)
+    with pytest.raises(KeyboardInterrupt):
         raw_store.write_cache_to_disc(b"new", cache_file)
     assert cache_file.read_bytes() == b"old"
     assert list(cache_file.parent.iterdir()) == [cache_file]
