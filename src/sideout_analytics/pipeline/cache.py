@@ -3,10 +3,32 @@ import os
 import pathlib
 import tempfile
 import urllib.parse
+from dataclasses import dataclass
 from typing import Self
 
 from ..settings import get_settings
 from .client import Client
+
+
+def hash_content(content: bytes) -> str:
+    """
+    sha256 of a response, stored as raw_response.content_hash.
+    """
+    return hashlib.sha256(content, usedforsecurity=False).hexdigest()
+
+
+@dataclass(frozen=True)
+class CachedResponse:
+    """
+    What RawStore.get returns. Has everything the loader needs for a
+    raw_response row in one call. cache_file is absolute, the loader makes
+    it relative to the data directory. Frozen so it can't be changed after
+    it's returned.
+    """
+
+    content: bytes
+    cache_file: pathlib.Path
+    content_hash: str
 
 
 class RawStore:
@@ -101,21 +123,23 @@ class RawStore:
                 temp_file.write(response_content)
                 temp_file.flush()
                 os.fsync(temp_file.fileno())
+                # temp files are owner only (0600), open it up so backups
+                # and other containers can read the raw data
+                temp_path.chmod(0o644)
                 temp_path.replace(cache_file)
             except OSError:
                 temp_path.unlink(missing_ok=True)
                 raise
-        return cache_file, hashlib.sha256(
-            response_content, usedforsecurity=False
-        ).hexdigest()
+        return cache_file, hash_content(response_content)
 
     async def get(
         self, client: Client, endpoint: str, refresh: bool = False
-    ) -> bytes:
+    ) -> CachedResponse:
         """
         returns the response for an endpoint, from disk if it is cached and
-        from the API otherwise. refresh=True skips the cache and overwrites
-        it, used for responses that can still change (see ADR-003).
+        from the API otherwise, along with its file and hash.
+        refresh=True skips the cache and overwrites it, used for responses
+        that can still change (see ADR-003).
         NotAvailableYetError and FailedFetchError come straight from the
         client and nothing gets written, so the next run tries again.
         """
@@ -123,8 +147,14 @@ class RawStore:
         if not refresh:
             cached_content = self.read_cached_file(cache_file)
             if cached_content is not None:
-                return cached_content
+                # hashing a hit is cheap and keeps the result the same
+                # shape either way
+                return CachedResponse(
+                    cached_content, cache_file, hash_content(cached_content)
+                )
 
         response_content = await client.get_bytes(endpoint)
-        self.write_cache_to_disc(response_content, cache_file)
-        return response_content
+        _, content_hash = self.write_cache_to_disc(
+            response_content, cache_file
+        )
+        return CachedResponse(response_content, cache_file, content_hash)

@@ -1,4 +1,5 @@
 import pathlib
+import stat
 
 import httpx
 import pytest
@@ -193,6 +194,16 @@ def test_cache_write_leaves_no_temp_file(raw_store) -> None:
     assert list(cache_file.parent.iterdir()) == [cache_file]
 
 
+def test_cache_write_file_is_world_readable(raw_store) -> None:
+    """
+    cache files are 0644 instead of the temp file's owner only 0600, so a
+    backup job or container running as another user can read them.
+    """
+    cache_file = raw_store.map_endpoint_cache_file("/game/1/boxscore")
+    raw_store.write_cache_to_disc(b"{}", cache_file)
+    assert stat.S_IMODE(cache_file.stat().st_mode) == 0o644
+
+
 def test_cache_failed_write_keeps_old_file(raw_store, monkeypatch) -> None:
     """
     if the write fails the old file is untouched, the temp file is cleaned
@@ -217,17 +228,22 @@ async def test_cache_miss_fetches_and_writes(raw_store) -> None:
     """
     mock_api = MockApi()
     async with mock_api.client() as client:
-        content = await raw_store.get(client, "/game/1/boxscore")
+        response = await raw_store.get(client, "/game/1/boxscore")
 
-    assert content == mock_api.body("/game/1/boxscore")
-    assert len(mock_api.requests) == 1
+    body = mock_api.body("/game/1/boxscore")
     cache_file = raw_store.map_endpoint_cache_file("/game/1/boxscore")
-    assert cache_file.read_bytes() == content
+    assert len(mock_api.requests) == 1
+    assert response == cache.CachedResponse(
+        body, cache_file, cache.hash_content(body)
+    )
+    assert cache_file.read_bytes() == body
 
 
 async def test_cache_hit_skips_network(raw_store) -> None:
     """
-    an endpoint that is already cached returns the file without a request.
+    an endpoint that is already cached returns the file without a request,
+    still with its path and hash so the loader gets the same result either
+    way.
     """
     cache_file = raw_store.map_endpoint_cache_file("/game/1/boxscore")
     raw_store.write_cache_to_disc(b"cached", cache_file)
@@ -236,8 +252,10 @@ async def test_cache_hit_skips_network(raw_store) -> None:
     async with api_client.Client(
         "https://api.test", "sideout-analytics-tests/0.1", transport
     ) as client:
-        content = await raw_store.get(client, "/game/1/boxscore")
-    assert content == b"cached"
+        response = await raw_store.get(client, "/game/1/boxscore")
+    assert response == cache.CachedResponse(
+        b"cached", cache_file, cache.hash_content(b"cached")
+    )
 
 
 async def test_cache_rerun_makes_zero_requests(tmp_path) -> None:
@@ -281,10 +299,14 @@ async def test_cache_refresh_overwrites(raw_store) -> None:
 
     mock_api = MockApi()
     async with mock_api.client() as client:
-        content = await raw_store.get(client, "/game/1/boxscore", refresh=True)
+        response = await raw_store.get(
+            client, "/game/1/boxscore", refresh=True
+        )
+    body = mock_api.body("/game/1/boxscore")
     assert len(mock_api.requests) == 1
-    assert content == mock_api.body("/game/1/boxscore")
-    assert cache_file.read_bytes() == content
+    assert response.content == body
+    assert response.content_hash == cache.hash_content(body)
+    assert cache_file.read_bytes() == body
 
 
 async def test_cache_failed_refresh_keeps_old_file(raw_store) -> None:
