@@ -4,6 +4,7 @@ import json
 import httpx
 import pytest
 
+from sideout_analytics.db.tables import MatchState
 from sideout_analytics.pipeline import cache, fetch
 from sideout_analytics.pipeline import client as api_client
 
@@ -118,13 +119,20 @@ def write_cached(raw_store, endpoint: str, content: bytes) -> None:
         (dt.date(2026, 7, 1), 2026),
     ],
 )
-def test_fetch_current_season(raw_store, today, expected) -> None:
+def test_fetch_season_for(today, expected) -> None:
     """
     the season is named by the year it starts. Jan to Jun still belongs to
     last year's season since late matches run into January.
     """
-    fetcher = make_fetcher(raw_store, client=None)
-    assert fetcher.current_season(today) == expected
+    assert fetch.season_for(today) == expected
+
+
+def test_fetch_current_season_uses_current_date(raw_store) -> None:
+    """
+    current_season is the season the fetcher's current_date falls in.
+    """
+    fetcher = make_fetcher(raw_store, client=None, today=dt.date(2026, 1, 15))
+    assert fetcher.current_season() == 2025
 
 
 def test_fetch_parse_date(raw_store) -> None:
@@ -326,4 +334,68 @@ async def test_fetch_cache_write_error_is_raised(raw_store, monkeypatch) -> None
     mock_api = MockApi({SCHEDULE_2025: schedule_body()})
     async with mock_api.client() as client:
         with pytest.raises(OSError, match="disk full"):
+            await make_fetcher(raw_store, client).get_season_index()
+
+
+def test_fetch_games_from_scoreboard() -> None:
+    """
+    raw scoreboard bytes become Games, with gameState as a MatchState.
+    """
+    games = fetch.games_from_scoreboard(scoreboard_body(("1", 100, "final"), ("2", 200, "pre")))
+    assert games == [
+        fetch.Game("1", 100, MatchState.FINAL),
+        fetch.Game("2", 200, MatchState.PRE),
+    ]
+    assert isinstance(games[0].state, MatchState)
+
+
+def test_fetch_unknown_game_state_raises() -> None:
+    """
+    a gameState that isn't pre, live or final fails here with the gameID,
+    instead of later as a CHECK violation in the loader.
+    """
+    with pytest.raises(ValueError, match="Game 7 has unknown gameState 'canceled'"):
+        fetch.games_from_scoreboard(scoreboard_body(("7", 100, "canceled")))
+
+
+async def test_fetch_refreshes_past_scoreboard_with_unplayed_games(raw_store) -> None:
+    """
+    a past scoreboard cached before its games were played still says pre.
+    it gets refreshed even though the date is old, so a missed day doesn't
+    freeze those games as unplayed. a past scoreboard that is all final
+    stays cached.
+    """
+    stale_day = TODAY - dt.timedelta(days=5)
+    settled_day = TODAY - dt.timedelta(days=6)
+    write_cached(raw_store, scoreboard_path(stale_day), scoreboard_body(("1", 100, "pre")))
+    write_cached(raw_store, scoreboard_path(settled_day), scoreboard_body(("2", 200, "final")))
+    mock_api = MockApi(
+        {
+            scoreboard_path(stale_day): scoreboard_body(("1", 100, "final")),
+            scoreboard_path(settled_day): scoreboard_body(("2", 200, "final")),
+        }
+    )
+
+    async with mock_api.client() as client:
+        scoreboards, errors = await make_fetcher(raw_store, client).get_date_scoreboards([settled_day, stale_day])
+
+    assert errors == []
+    assert mock_api.requested_paths == [scoreboard_path(stale_day)]
+    assert fetch.games_from_scoreboard(scoreboards[stale_day].content)[0].state == MatchState.FINAL
+
+
+async def test_fetch_game_on_two_dates_raises(raw_store) -> None:
+    """
+    the same gameID on two different dates has never happened, so it raises
+    instead of quietly keeping one. same day repeats are still deduped.
+    """
+    mock_api = MockApi(
+        {
+            SCHEDULE_2025: schedule_body("09/05/2025", "09/06/2025"),
+            scoreboard_path(dt.date(2025, 9, 5)): scoreboard_body(("1", 100, "final")),
+            scoreboard_path(dt.date(2025, 9, 6)): scoreboard_body(("1", 100, "final")),
+        }
+    )
+    async with mock_api.client() as client:
+        with pytest.raises(ValueError, match="Game 1 is on the scoreboards for both 2025-09-05 and 2025-09-06"):
             await make_fetcher(raw_store, client).get_season_index()

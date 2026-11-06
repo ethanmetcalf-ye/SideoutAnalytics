@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
+from ..db.tables import MatchState
 from .cache import CachedResponse, RawStore
 from .client import Client, FailedFetchError, NotAvailableYetError
 
@@ -17,7 +18,7 @@ class Game:
 
     game_id: str
     start_epoch: int
-    state: str
+    state: MatchState
 
 
 @dataclass(frozen=True)
@@ -31,9 +32,34 @@ class FailedRequest:
     error: Exception
 
 
+def season_for(day: dt.date) -> int:
+    """
+    season is named by the year it starts. it runs Aug through Jan, so
+    Jan to Jun still belongs to last year's season.
+    """
+    return day.year if day.month >= 7 else day.year - 1
+
+
+def games_from_scoreboard(content: bytes) -> list[Game]:
+    """
+    turns a raw scoreboard response into its games, bytes in and rows out.
+    Raises ValueError on a gameState that isn't a MatchState so an API change
+    fails here with the gameID, not later as a CHECK violation in the loader.
+    """
+    games = []
+    for entry in json.loads(content)["games"]:
+        game = entry["game"]
+        try:
+            state = MatchState(game["gameState"])
+        except ValueError as e:
+            raise ValueError(f"Game {game['gameID']} has unknown gameState {game['gameState']!r}") from e
+        games.append(Game(game["gameID"], int(game["startTimeEpoch"]), state))
+    return games
+
+
 class Fetcher:
     """
-    Decides which endpoints to request and when to refresh them (ADR-003),
+    Decides which endpoints to request and when to refresh them (ADR-004),
     and builds the season index from the schedule and daily scoreboards.
     Doesn't open the client itself, the caller opens it once and passes it
     in along with the store. current_date is passed in too so tests don't
@@ -54,12 +80,11 @@ class Fetcher:
         self.sport = "volleyball-women"
         self.division = "d1"
 
-    def current_season(self, today: dt.date) -> int:
+    def current_season(self) -> int:
         """
-        season is named by the year it starts. it runs Aug through Jan, so
-        Jan to Jun still belongs to last year's season.
+        the season current_date falls in.
         """
-        return today.year if today.month >= 7 else today.year - 1
+        return season_for(self.current_date)
 
     def parse_date(self, contest_date: str) -> dt.date:
         """
@@ -68,19 +93,32 @@ class Fetcher:
         month, day, year = map(int, contest_date.split("/"))
         return dt.date(year, month, day)
 
+    def has_unsettled_games(self, endpoint: str) -> bool:
+        """
+        true if the cached scoreboard for an endpoint has any game that isn't
+        final. a scoreboard fetched before its games were played is still all
+        pre, so it needs a refresh no matter how old the date is (ADR-004).
+        False when nothing is cached, get fetches a miss anyway.
+        """
+        cached_content = self.raw_store.read_cached_file(self.raw_store.map_endpoint_cache_file(endpoint))
+        if cached_content is None:
+            return False
+        return any(game.state != MatchState.FINAL for game in games_from_scoreboard(cached_content))
+
     async def make_requests(
         self, api_calls: list[tuple[str, bool]]
-    ) -> tuple[list[CachedResponse], list[FailedRequest]]:
+    ) -> tuple[dict[str, CachedResponse], list[FailedRequest]]:
         """
-        sends each (endpoint, refresh) through the cache. a request the client
-        gives up on is collected as a FailedRequest and the rest keep going,
-        anything else (bad endpoint, failed cache write) still raises.
+        sends each (endpoint, refresh) through the cache and returns the
+        responses keyed by endpoint. a request the client gives up on is
+        collected as a FailedRequest and the rest keep going, anything else
+        (bad endpoint, failed cache write) still raises.
         """
-        responses = []
+        responses = {}
         errors = []
         for endpoint, refresh in api_calls:
             try:
-                responses.append(await self.raw_store.get(self.client, endpoint, refresh=refresh))
+                responses[endpoint] = await self.raw_store.get(self.client, endpoint, refresh=refresh)
             except (FailedFetchError, NotAvailableYetError) as e:
                 errors.append(FailedRequest(endpoint, e))
         return responses, errors
@@ -94,28 +132,31 @@ class Fetcher:
         schedule_calls = [
             (
                 f"/schedule-alt/{self.sport}/{self.division}/{year}",
-                self.current_season(self.current_date) <= year,
+                self.current_season() <= year,
             )
             for year in self.years
         ]
-        schedule_response, schedule_errors = await self.make_requests(schedule_calls)
-        return schedule_response, schedule_errors
+        schedule_responses, schedule_errors = await self.make_requests(schedule_calls)
+        return list(schedule_responses.values()), schedule_errors
 
-    async def get_date_scoreboards(self, dates: list[dt.date]) -> tuple[list[CachedResponse], list[FailedRequest]]:
+    async def get_date_scoreboards(
+        self, dates: list[dt.date]
+    ) -> tuple[dict[dt.date, CachedResponse], list[FailedRequest]]:
         """
-        gets the scoreboard for each date. scoreboards from yesterday on are
-        refreshed since games on them can still finish, older ones come from
-        the cache.
+        gets the scoreboard for each date, keyed by date. scoreboards from
+        yesterday on are refreshed since games on them can still finish.
+        older ones are refreshed only if the cached copy still has a game
+        that isn't final, otherwise they come from the cache (ADR-004).
         """
+        yesterday = self.current_date - dt.timedelta(days=1)
+        endpoint_dates = {f"/scoreboard/{self.sport}/{self.division}/{date:%Y/%m/%d}": date for date in dates}
         date_scoreboard_calls = [
-            (
-                f"/scoreboard/{self.sport}/{self.division}/{date:%Y/%m/%d}",
-                date >= self.current_date - dt.timedelta(days=1),
-            )
-            for date in dates
+            (endpoint, date >= yesterday or self.has_unsettled_games(endpoint))
+            for endpoint, date in endpoint_dates.items()
         ]
-        date_scoreboard_response, date_scoreboard_errors = await self.make_requests(date_scoreboard_calls)
-        return date_scoreboard_response, date_scoreboard_errors
+        date_scoreboard_responses, date_scoreboard_errors = await self.make_requests(date_scoreboard_calls)
+        scoreboards = {endpoint_dates[endpoint]: response for endpoint, response in date_scoreboard_responses.items()}
+        return scoreboards, date_scoreboard_errors
 
     async def get_season_index(self) -> tuple[dict[str, Game], list[FailedRequest]]:
         """
@@ -123,6 +164,9 @@ class Fetcher:
         games, deduped by gameID. returns the games along with any failed
         requests, so the caller has to check the errors to know if the index
         is complete.
+        Raises ValueError if a game shows up on two different dates. same day
+        repeats are a known API quirk, a game on two days would mean something
+        we don't understand yet so it shouldn't be quietly resolved.
         """
         schedule_responses, schedule_errors = await self.get_season_schedule()
         schedule_dates = []
@@ -130,30 +174,29 @@ class Fetcher:
             content = json.loads(schedule_response.content)
             schedule_dates += [self.parse_date(date["contestDate"]) for date in content["data"]["schedules"]["games"]]
 
-        games_index = []
-        scoreboard_response, scoreboard_errors = await self.get_date_scoreboards(schedule_dates)
-        for response in scoreboard_response:
-            content = json.loads(response.content)
-            games_index += [
-                Game(
-                    game["game"]["gameID"],
-                    int(game["game"]["startTimeEpoch"]),
-                    game["game"]["gameState"],
-                )
-                for game in content["games"]
-            ]
-        return {game.game_id: game for game in games_index}, schedule_errors + scoreboard_errors
+        games_index = {}
+        game_dates = {}
+        scoreboards, scoreboard_errors = await self.get_date_scoreboards(schedule_dates)
+        for date, response in scoreboards.items():
+            for game in games_from_scoreboard(response.content):
+                first_date = game_dates.setdefault(game.game_id, date)
+                if first_date != date:
+                    raise ValueError(f"Game {game.game_id} is on the scoreboards for both {first_date} and {date}")
+                games_index[game.game_id] = game
+        return games_index, schedule_errors + scoreboard_errors
 
 
 async def main() -> None:
     """
-    runs the season index against the real API for a quick check.
+    runs the season index for the current season against the real API for a
+    quick check.
     """
+    today = dt.datetime.now(tz=ZoneInfo("America/New_York")).date()
     async with Client.from_settings() as my_client:
         my_rawstore = RawStore.from_settings()
         fetcher = Fetcher(
-            [2024, 2025],
-            dt.datetime.now(tz=ZoneInfo("America/New_York")).date(),
+            [season_for(today)],
+            today,
             client=my_client,
             raw_store=my_rawstore,
         )
