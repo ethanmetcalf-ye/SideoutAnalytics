@@ -1,6 +1,6 @@
 # ADR-003: Re-fetch Cached Responses Only While They Can Still Change
 
-**Status:** Accepted
+**Status:** Superseded by ADR-004
 
 ## Context
 

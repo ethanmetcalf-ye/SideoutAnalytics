@@ -35,7 +35,8 @@ Add dependencies with `uv add <pkg>` (or `uv add --dev <pkg>`). Never edit
 | `src/sideout_analytics/` | The application package. All code lives here. |
 | `src/sideout_analytics/settings.py` | The only place config is read. Use `get_settings()`; don't read `os.environ` elsewhere. New settings get a field here and an entry in `.env.example`. |
 | `src/sideout_analytics/pipeline/client.py` | HTTP client for the NCAA API: shared rate limit, retries, raw response bytes. Build it with `Client.from_settings()`; all API requests go through it. |
-| `src/sideout_analytics/pipeline/cache.py` | Raw response cache: one file per endpoint under `data_directory/raw`, atomic writes. Fetch through `RawStore.get(client, endpoint)` so cache hits skip the network; when to pass `refresh=True` is in ADR-003. |
+| `src/sideout_analytics/pipeline/cache.py` | Raw response cache: one file per endpoint under `data_directory/raw`, atomic writes. Fetch through `RawStore.get(client, endpoint)` so cache hits skip the network; when to pass `refresh=True` is in ADR-004. |
+| `src/sideout_analytics/pipeline/fetch.py` | Fetcher: which endpoints to request and when to refresh them (ADR-004), and the season index from schedules and scoreboards. Takes an open `Client` and a `RawStore`; failed requests come back as `FailedRequest`s, so callers must check them. |
 | `tests/` | pytest tests, one `test_<module>.py` per module. |
 | `docs/adr/` | Architecture decisions, `NNNN-short-title.md`. |
 | `docs/schema.md` | Database design. The source of truth for tables, columns and constraints; migrations implement it. |

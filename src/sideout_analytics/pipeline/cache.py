@@ -133,7 +133,7 @@ class RawStore:
         returns the response for an endpoint, from disk if it is cached and
         from the API otherwise, along with its file and hash.
         refresh=True skips the cache and overwrites it, used for responses
-        that can still change (see ADR-003).
+        that can still change (see ADR-004).
         NotAvailableYetError and FailedFetchError come straight from the
         client and nothing gets written, so the next run tries again.
         """
