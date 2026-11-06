@@ -75,9 +75,7 @@ class MockApi:
         endpoint gets different bytes.
         """
         self.requests.append(request)
-        return httpx.Response(
-            self.status_code, content=self.body(request.url.path)
-        )
+        return httpx.Response(self.status_code, content=self.body(request.url.path))
 
     def body(self, endpoint: str) -> bytes:
         """
@@ -137,9 +135,7 @@ def test_cache_query_order_maps_to_same_file(raw_store) -> None:
     """
     the same query in a different order is the same cache file.
     """
-    assert raw_store.map_endpoint_cache_file(
-        "/s?b=2&a=1"
-    ) == raw_store.map_endpoint_cache_file("/s?a=1&b=2")
+    assert raw_store.map_endpoint_cache_file("/s?b=2&a=1") == raw_store.map_endpoint_cache_file("/s?a=1&b=2")
 
 
 def test_cache_game_file_and_folder_do_not_collide(raw_store) -> None:
@@ -179,14 +175,10 @@ def test_cache_write_creates_nested_file(raw_store) -> None:
     of its content.
     """
     cache_file = raw_store.map_endpoint_cache_file("/game/1/boxscore")
-    written_file, content_hash = raw_store.write_cache_to_disc(
-        b"{}", cache_file
-    )
+    written_file, content_hash = raw_store.write_cache_to_disc(b"{}", cache_file)
     assert written_file == cache_file
     assert raw_store.read_cached_file(cache_file) == b"{}"
-    assert content_hash == (
-        "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
-    )
+    assert content_hash == ("44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a")
 
 
 def test_cache_write_leaves_no_temp_file(raw_store) -> None:
@@ -256,9 +248,7 @@ async def test_cache_miss_fetches_and_writes(raw_store) -> None:
     body = mock_api.body("/game/1/boxscore")
     cache_file = raw_store.map_endpoint_cache_file("/game/1/boxscore")
     assert len(mock_api.requests) == 1
-    assert response == cache.CachedResponse(
-        body, cache_file, cache.hash_content(body)
-    )
+    assert response == cache.CachedResponse(body, cache_file, cache.hash_content(body))
     assert cache_file.read_bytes() == body
 
 
@@ -272,13 +262,9 @@ async def test_cache_hit_skips_network(raw_store) -> None:
     raw_store.write_cache_to_disc(b"cached", cache_file)
 
     transport = httpx.MockTransport(failing_handler)
-    async with api_client.Client(
-        "https://api.test", "sideout-analytics-tests/0.1", transport
-    ) as client:
+    async with api_client.Client("https://api.test", "sideout-analytics-tests/0.1", transport) as client:
         response = await raw_store.get(client, "/game/1/boxscore")
-    assert response == cache.CachedResponse(
-        b"cached", cache_file, cache.hash_content(b"cached")
-    )
+    assert response == cache.CachedResponse(b"cached", cache_file, cache.hash_content(b"cached"))
 
 
 async def test_cache_rerun_makes_zero_requests(tmp_path) -> None:
@@ -296,19 +282,13 @@ async def test_cache_rerun_makes_zero_requests(tmp_path) -> None:
     mock_api = MockApi()
     first_store = cache.RawStore(tmp_path / "raw")
     async with mock_api.client() as client:
-        first_run = [
-            await first_store.get(client, endpoint) for endpoint in endpoints
-        ]
+        first_run = [await first_store.get(client, endpoint) for endpoint in endpoints]
     assert len(mock_api.requests) == len(endpoints)
 
     second_store = cache.RawStore(tmp_path / "raw")
     transport = httpx.MockTransport(failing_handler)
-    async with api_client.Client(
-        "https://api.test", "sideout-analytics-tests/0.1", transport
-    ) as client:
-        second_run = [
-            await second_store.get(client, endpoint) for endpoint in endpoints
-        ]
+    async with api_client.Client("https://api.test", "sideout-analytics-tests/0.1", transport) as client:
+        second_run = [await second_store.get(client, endpoint) for endpoint in endpoints]
     assert second_run == first_run
 
 
@@ -322,9 +302,7 @@ async def test_cache_refresh_overwrites(raw_store) -> None:
 
     mock_api = MockApi()
     async with mock_api.client() as client:
-        response = await raw_store.get(
-            client, "/game/1/boxscore", refresh=True
-        )
+        response = await raw_store.get(client, "/game/1/boxscore", refresh=True)
     body = mock_api.body("/game/1/boxscore")
     assert len(mock_api.requests) == 1
     assert response.content == body

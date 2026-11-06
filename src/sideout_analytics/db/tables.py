@@ -87,10 +87,7 @@ def _text_enum(enum_cls: type[enum.StrEnum]) -> Enum:
 
 def non_negative(*columns: str) -> list[CheckConstraint]:
     """One `column >= 0` CHECK per count column."""
-    return [
-        CheckConstraint(f"{column} >= 0", name=f"{column}_non_negative")
-        for column in columns
-    ]
+    return [CheckConstraint(f"{column} >= 0", name=f"{column}_non_negative") for column in columns]
 
 
 # Stable constraint names, so Alembic can find them in later migrations.
@@ -126,9 +123,7 @@ Small = Annotated[int, mapped_column(SmallInteger)]
 
 class Season(Base):
     __tablename__ = "season"
-    __table_args__ = (
-        CheckConstraint("start_date <= end_date", name="dates_in_order"),
-    )
+    __table_args__ = (CheckConstraint("start_date <= end_date", name="dates_in_order"),)
 
     year: Mapped[Year] = mapped_column(primary_key=True)
     start_date: Mapped[date]
@@ -160,17 +155,11 @@ class TeamAlias(Base):
 class TeamSeason(Base):
     __tablename__ = "team_season"
 
-    team_id: Mapped[int] = mapped_column(
-        ForeignKey("team.team_id"), primary_key=True
-    )
-    season: Mapped[Year] = mapped_column(
-        ForeignKey("season.year"), primary_key=True
-    )
+    team_id: Mapped[int] = mapped_column(ForeignKey("team.team_id"), primary_key=True)
+    season: Mapped[Year] = mapped_column(ForeignKey("season.year"), primary_key=True)
     source_team_id: Mapped[str]
     division: Mapped[Division]
-    conference_id: Mapped[int] = mapped_column(
-        ForeignKey("conference.conference_id")
-    )
+    conference_id: Mapped[int] = mapped_column(ForeignKey("conference.conference_id"))
     head_coach: Mapped[str | None]
     assistant_coaches: Mapped[list[str] | None]
 
@@ -194,9 +183,7 @@ class Roster(Base):
         UniqueConstraint("team_id", "season", "name_key"),
     )
 
-    player_id: Mapped[int] = mapped_column(
-        ForeignKey("player.player_id"), primary_key=True
-    )
+    player_id: Mapped[int] = mapped_column(ForeignKey("player.player_id"), primary_key=True)
     team_id: Mapped[int] = mapped_column(primary_key=True)
     season: Mapped[Year] = mapped_column(primary_key=True)
     name_key: Mapped[str]
@@ -206,11 +193,7 @@ class Roster(Base):
 
 class IngestRun(Base):
     __tablename__ = "ingest_run"
-    __table_args__ = (
-        CheckConstraint(
-            "finished_at >= started_at", name="finished_after_started"
-        ),
-    )
+    __table_args__ = (CheckConstraint("finished_at >= started_at", name="finished_after_started"),)
 
     ingest_run_id: Mapped[Id]
     job: Mapped[str]
@@ -238,9 +221,7 @@ class Match(Base):
     pbp_parser_version: Mapped[str | None]
     result_first_seen_at: Mapped[datetime | None]
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    ingest_run_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_run.ingest_run_id")
-    )
+    ingest_run_id: Mapped[int] = mapped_column(ForeignKey("ingest_run.ingest_run_id"))
 
 
 class MatchTeam(Base):
@@ -263,12 +244,8 @@ class MatchTeam(Base):
         ),
     )
 
-    match_id: Mapped[int] = mapped_column(
-        ForeignKey("match.match_id", ondelete="CASCADE"), primary_key=True
-    )
-    team_id: Mapped[int] = mapped_column(
-        ForeignKey("team.team_id"), primary_key=True
-    )
+    match_id: Mapped[int] = mapped_column(ForeignKey("match.match_id", ondelete="CASCADE"), primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("team.team_id"), primary_key=True)
     is_home: Mapped[bool]
     is_winner: Mapped[bool | None]
     sets_won: Mapped[Small | None]
@@ -304,16 +281,12 @@ class BoxScoreLine(Base):
             ["match_team.match_id", "match_team.team_id"],
             ondelete="CASCADE",
         ),
-        CheckConstraint(
-            "sets_played BETWEEN 0 AND 5", name="sets_played_range"
-        ),
+        CheckConstraint("sets_played BETWEEN 0 AND 5", name="sets_played_range"),
         *non_negative(*BOX_SCORE_COUNTS),
     )
 
     match_id: Mapped[int] = mapped_column(primary_key=True)
-    player_id: Mapped[int] = mapped_column(
-        ForeignKey("player.player_id"), primary_key=True
-    )
+    player_id: Mapped[int] = mapped_column(ForeignKey("player.player_id"), primary_key=True)
     team_id: Mapped[int]
     position: Mapped[str | None]
     started: Mapped[bool]
@@ -392,17 +365,13 @@ class Play(Base):
             ["match_team.match_id", "match_team.team_id"],
         ),
         CheckConstraint("set_number BETWEEN 1 AND 5", name="set_number_range"),
-        CheckConstraint(
-            "home_score >= 0 AND away_score >= 0", name="score_nonnegative"
-        ),
+        CheckConstraint("home_score >= 0 AND away_score >= 0", name="score_nonnegative"),
         CheckConstraint("sequence >= 1", name="positive_sequence"),
         UniqueConstraint("match_id", "set_number", "sequence"),
     )
 
     play_id: Mapped[Id]
-    match_id: Mapped[int] = mapped_column(
-        ForeignKey("match.match_id", ondelete="CASCADE")
-    )
+    match_id: Mapped[int] = mapped_column(ForeignKey("match.match_id", ondelete="CASCADE"))
     set_number: Mapped[Small]
     sequence: Mapped[int] = mapped_column(Integer)
     play_type: Mapped[PlayType]
@@ -416,12 +385,8 @@ class Play(Base):
 class PlayPlayer(Base):
     __tablename__ = "play_player"
 
-    play_id: Mapped[int] = mapped_column(
-        ForeignKey("play.play_id", ondelete="CASCADE"), primary_key=True
-    )
-    player_id: Mapped[int] = mapped_column(
-        ForeignKey("player.player_id"), primary_key=True
-    )
+    play_id: Mapped[int] = mapped_column(ForeignKey("play.play_id", ondelete="CASCADE"), primary_key=True)
+    player_id: Mapped[int] = mapped_column(ForeignKey("player.player_id"), primary_key=True)
     role: Mapped[PlayRole] = mapped_column(primary_key=True)
 
 
@@ -432,9 +397,7 @@ class TeamRank(Base):
         *non_negative("total_points", "first_place_votes"),
     )
 
-    team_id: Mapped[int] = mapped_column(
-        ForeignKey("team.team_id"), primary_key=True
-    )
+    team_id: Mapped[int] = mapped_column(ForeignKey("team.team_id"), primary_key=True)
     poll: Mapped[str] = mapped_column(primary_key=True)
     poll_date: Mapped[date] = mapped_column(primary_key=True)
     season: Mapped[Year] = mapped_column(ForeignKey("season.year"))
@@ -452,18 +415,12 @@ class RawResponse(Base):
     content_hash: Mapped[str]
     match_id: Mapped[int | None] = mapped_column(ForeignKey("match.match_id"))
     fetched_at: Mapped[datetime]
-    ingest_run_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_run.ingest_run_id")
-    )
+    ingest_run_id: Mapped[int] = mapped_column(ForeignKey("ingest_run.ingest_run_id"))
 
 
 class Prediction(Base):
     __tablename__ = "prediction"
-    __table_args__ = (
-        CheckConstraint(
-            "home_win_probability BETWEEN 0 AND 1", name="probability_range"
-        ),
-    )
+    __table_args__ = (CheckConstraint("home_win_probability BETWEEN 0 AND 1", name="probability_range"),)
 
     prediction_id: Mapped[Id]
     match_id: Mapped[int] = mapped_column(ForeignKey("match.match_id"))

@@ -237,9 +237,7 @@ async def test_client_no_retry_unplayed_match(path) -> None:
     mock_api = MockApi(httpx.Response(502))
 
     async with mock_api.client() as client:
-        with pytest.raises(
-            api_client.NotAvailableYetError, match="not been played"
-        ):
+        with pytest.raises(api_client.NotAvailableYetError, match="not been played"):
             await client.get_bytes(path)
 
     assert len(mock_api.requests) == 1
@@ -348,9 +346,7 @@ async def test_client_caps_retry_after() -> None:
     assert mock_api.sleeps == [30]
 
 
-@pytest.mark.parametrize(
-    "retry_after", ["0", "Wed, 21 Oct 2026 07:28:00 GMT", "soon"]
-)
+@pytest.mark.parametrize("retry_after", ["0", "Wed, 21 Oct 2026 07:28:00 GMT", "soon"])
 async def test_client_bad_retry_after_uses_backoff(retry_after) -> None:
     """
     Retry-After of 0, an http date, or junk falls back to the backoff.
@@ -372,9 +368,7 @@ async def test_client_limits_every_attempt() -> None:
     every attempt goes through the limiter, retries included, since the API
     counts each request against the rate limit.
     """
-    mock_api = MockApi(
-        httpx.Response(503), httpx.Response(503), httpx.Response(200)
-    )
+    mock_api = MockApi(httpx.Response(503), httpx.Response(503), httpx.Response(200))
     limiter = CountingLimiter()
 
     async with mock_api.client() as client:
@@ -395,9 +389,7 @@ async def test_client_shares_limiter_across_requests() -> None:
         client._limiter = limiter
         async with anyio.create_task_group() as task_group:
             for game_id in range(5):
-                task_group.start_soon(
-                    client.get_bytes, f"/game/{game_id}/boxscore"
-                )
+                task_group.start_soon(client.get_bytes, f"/game/{game_id}/boxscore")
 
     assert limiter.entered == 5
 
@@ -459,9 +451,7 @@ async def test_client_from_settings(monkeypatch, isolated_env) -> None:
     monkeypatch.setenv("USERAGENT_ID", "from-settings-agent")
     mock_api = MockApi(httpx.Response(200, content=b"ok"))
 
-    async with api_client.Client.from_settings(
-        transport=httpx.MockTransport(mock_api.handle)
-    ) as client:
+    async with api_client.Client.from_settings(transport=httpx.MockTransport(mock_api.handle)) as client:
         body = await client.get_bytes("/scoreboard")
 
     request = mock_api.requests[0]
@@ -470,9 +460,7 @@ async def test_client_from_settings(monkeypatch, isolated_env) -> None:
     assert request.headers["User-Agent"] == "from-settings-agent"
 
 
-async def test_client_from_settings_default_user_agent(
-    monkeypatch, isolated_env
-) -> None:
+async def test_client_from_settings_default_user_agent(monkeypatch, isolated_env) -> None:
     """
     with no USERAGENT_ID set, the default from settings identifies this repo.
     """
@@ -480,18 +468,14 @@ async def test_client_from_settings_default_user_agent(
         monkeypatch.setenv(name, value)
     mock_api = MockApi(httpx.Response(200))
 
-    async with api_client.Client.from_settings(
-        transport=httpx.MockTransport(mock_api.handle)
-    ) as client:
+    async with api_client.Client.from_settings(transport=httpx.MockTransport(mock_api.handle)) as client:
         await client.get_bytes("/scoreboard")
 
     user_agent = mock_api.requests[0].headers["User-Agent"]
     assert user_agent.startswith("sideout-analytics/")
 
 
-async def test_client_from_settings_passes_options(
-    monkeypatch, isolated_env
-) -> None:
+async def test_client_from_settings_passes_options(monkeypatch, isolated_env) -> None:
     """
     other options passed to from_settings reach the client, ex. max_attempts.
     """
