@@ -21,9 +21,7 @@ def test_settings_defaults(monkeypatch, isolated_env) -> None:
 
 
 @pytest.mark.parametrize("missing", list(REQUIRED_ENV))
-def test_settings_missing_required_field(
-    monkeypatch, isolated_env, missing
-) -> None:
+def test_settings_missing_required_field(monkeypatch, isolated_env, missing) -> None:
     for name, value in REQUIRED_ENV.items():
         if name != missing:
             monkeypatch.setenv(name, value)
@@ -38,16 +36,12 @@ def test_settings_missing_required_field(
 
 def test_settings_loaded_from_env_file(isolated_env) -> None:
     (isolated_env / ".env").write_text(
-        "DATA_DIRECTORY=./from-file\n"
-        "DATABASE_URL=postgresql://file:file@db:5432/filedb\n"
-        "LOG_LEVEL=DEBUG\n"
+        "DATA_DIRECTORY=./from-file\nDATABASE_URL=postgresql://file:file@db:5432/filedb\nLOG_LEVEL=DEBUG\n"
     )
 
     loaded_settings = settings.get_settings()
     assert loaded_settings.data_directory == Path("./from-file")
-    assert (
-        loaded_settings.database_url == "postgresql://file:file@db:5432/filedb"
-    )
+    assert loaded_settings.database_url == "postgresql://file:file@db:5432/filedb"
     assert loaded_settings.log_level == "DEBUG"
 
 
@@ -71,9 +65,7 @@ def test_settings_env_overrides(monkeypatch, isolated_env) -> None:
     assert loaded_settings.log_level == "WARNING"
 
 
-def test_settings_env_wrong_literal_value_logs(
-    monkeypatch, isolated_env
-) -> None:
+def test_settings_env_wrong_literal_value_logs(monkeypatch, isolated_env) -> None:
     for name, value in REQUIRED_ENV.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setenv("LOG_LEVEL", "Test")  # Invalid value

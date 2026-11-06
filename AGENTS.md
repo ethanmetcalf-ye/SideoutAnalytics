@@ -45,9 +45,10 @@ Add dependencies with `uv add <pkg>` (or `uv add --dev <pkg>`). Never edit
 
 ## Code conventions
 
-- Ruff config in `pyproject.toml` is the style guide: 79-char lines, type
+- Ruff config in `pyproject.toml` is the style guide: 120-char lines, type
   annotations required outside `tests/`, `pathlib` over `os.path`,
-  timezone-aware datetimes.
+  timezone-aware datetimes. Ruff skips `migrations/versions/`, so migrations
+  that have already run keep their original formatting.
 - Tests must not depend on the developer's `.env` or shell. Use the
   `isolated_env` fixture in `tests/conftest.py`: it clears settings env vars,
   `chdir`s to `tmp_path`, and calls `get_settings.cache_clear()`.

@@ -74,11 +74,8 @@ class RawStore:
         # extension stays last, e.g. 45__page=2.json. keys and values are
         # quoted back so a decoded / or .. can't point at another file
         args = [
-            f"{urllib.parse.quote(key, safe='')}="
-            f"{urllib.parse.quote(value, safe='')}"
-            for key, value in sorted(
-                urllib.parse.parse_qsl(query, keep_blank_values=True)
-            )
+            f"{urllib.parse.quote(key, safe='')}={urllib.parse.quote(value, safe='')}"
+            for key, value in sorted(urllib.parse.parse_qsl(query, keep_blank_values=True))
         ]
         query_part = "__" + "__".join(args) if args else ""
         suffix = path.suffix or ".json"
@@ -87,10 +84,7 @@ class RawStore:
         root = self.cache_directory.resolve()
         candidate = (root / normalized_cache_path).resolve()
         if not candidate.is_relative_to(root):
-            raise ValueError(
-                f"Endpoint {endpoint} cannot be mapped to a cache file "
-                f"at {normalized_cache_path}..."
-            )
+            raise ValueError(f"Endpoint {endpoint} cannot be mapped to a cache file at {normalized_cache_path}...")
 
         return candidate
 
@@ -105,9 +99,7 @@ class RawStore:
         except FileNotFoundError:
             return None
 
-    def write_cache_to_disc(
-        self, response_content: bytes, cache_file: pathlib.Path
-    ) -> tuple[pathlib.Path, str]:
+    def write_cache_to_disc(self, response_content: bytes, cache_file: pathlib.Path) -> tuple[pathlib.Path, str]:
         """
         writes the response atomically so a crash never leaves a half
         written file, the old file stays until the new one is complete.
@@ -119,9 +111,7 @@ class RawStore:
         # nested endpoints like game/123/ need their folder first, and
         # the temp file sits next to the target so the replace is atomic
         cache_file.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            "wb", dir=cache_file.parent, delete=False
-        ) as temp_file:
+        with tempfile.NamedTemporaryFile("wb", dir=cache_file.parent, delete=False) as temp_file:
             temp_path = pathlib.Path(temp_file.name)
             try:
                 temp_file.write(response_content)
@@ -138,9 +128,7 @@ class RawStore:
                 raise
         return cache_file, hash_content(response_content)
 
-    async def get(
-        self, client: Client, endpoint: str, refresh: bool = False
-    ) -> CachedResponse:
+    async def get(self, client: Client, endpoint: str, refresh: bool = False) -> CachedResponse:
         """
         returns the response for an endpoint, from disk if it is cached and
         from the API otherwise, along with its file and hash.
@@ -155,12 +143,8 @@ class RawStore:
             if cached_content is not None:
                 # hashing a hit is cheap and keeps the result the same
                 # shape either way
-                return CachedResponse(
-                    cached_content, cache_file, hash_content(cached_content)
-                )
+                return CachedResponse(cached_content, cache_file, hash_content(cached_content))
 
         response_content = await client.get_bytes(endpoint)
-        _, content_hash = self.write_cache_to_disc(
-            response_content, cache_file
-        )
+        _, content_hash = self.write_cache_to_disc(response_content, cache_file)
         return CachedResponse(response_content, cache_file, content_hash)

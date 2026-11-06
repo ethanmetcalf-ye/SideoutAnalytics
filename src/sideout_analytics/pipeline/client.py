@@ -19,9 +19,7 @@ class RetryableFetchError(Exception):
     one. Internal to Client, callers never see it.
     """
 
-    def __init__(
-        self, message: str, retry_delay_secs: float | None = None
-    ) -> None:
+    def __init__(self, message: str, retry_delay_secs: float | None = None) -> None:
         super().__init__(message)
         self.retry_delay_secs = retry_delay_secs
 
@@ -95,9 +93,7 @@ class Client:
         # Leaky-bucket throttling shared by every request on this client so
         # async calls stay under the API rate limit. Allows a short burst up to
         # rate_limit_per_sec, then spaces the rest out evenly
-        self._limiter = AsyncLimiter(
-            max_rate=rate_limit_per_sec, time_period=1
-        )
+        self._limiter = AsyncLimiter(max_rate=rate_limit_per_sec, time_period=1)
 
         # Defines expected codes and maps to their behavior (retry vs not)
         # Any code not listed fails with no retry. 502 on match endpoints is
@@ -108,9 +104,7 @@ class Client:
         }
 
     @classmethod
-    def from_settings(
-        cls, transport: httpx.AsyncBaseTransport | None = None, **kwargs: float
-    ) -> Self:
+    def from_settings(cls, transport: httpx.AsyncBaseTransport | None = None, **kwargs: float) -> Self:
         """
         builds a client from settings for real use. reads the base url and
         user agent, any other options are passed through to Client. tests
@@ -133,10 +127,7 @@ class Client:
         """
         exc = retry_state.outcome.exception()
         wait_val = self.backoff(retry_state)
-        if (
-            isinstance(exc, RetryableFetchError)
-            and exc.retry_delay_secs is not None
-        ):
+        if isinstance(exc, RetryableFetchError) and exc.retry_delay_secs is not None:
             wait_val = max(exc.retry_delay_secs, wait_val)
         return min(wait_val, self.max_wait_secs)
 
@@ -169,10 +160,7 @@ class Client:
             try:
                 response = await self._http.get(path)
             except httpx.TransportError as e:
-                raise RetryableFetchError(
-                    f"Get request to {path} failed with a network error. "
-                    f"Retrying..."
-                ) from e
+                raise RetryableFetchError(f"Get request to {path} failed with a network error. Retrying...") from e
         # Retry-After can be secs or an http date, only secs are used for now
         try:
             retry_secs = float(response.headers.get("Retry-After"))
@@ -188,20 +176,15 @@ class Client:
             )
         elif response.status_code in self._codes["unavailable"]:
             raise RetryableFetchError(
-                f"Get request to {path} failed with status code "
-                f"{response.status_code}. Retrying...",
+                f"Get request to {path} failed with status code {response.status_code}. Retrying...",
                 retry_delay_secs=retry_secs,
             )
         elif response.status_code in self._codes["bad_requests"]:
             raise FailedFetchError(
-                f"Get request to {path} failed with status code "
-                f"{response.status_code}. No retry for bad requests..."
+                f"Get request to {path} failed with status code {response.status_code}. No retry for bad requests..."
             )
         else:
-            raise FailedFetchError(
-                f"Get request to {path} failed with status code "
-                f"{response.status_code}."
-            )
+            raise FailedFetchError(f"Get request to {path} failed with status code {response.status_code}.")
 
     async def get_bytes(self, path: str) -> bytes:
         """
@@ -215,7 +198,4 @@ class Client:
                 with attempt:
                     return await self._get_once(path)
         except RetryableFetchError as e:
-            raise FailedFetchError(
-                f"Get request to {path} failed after "
-                f"{self.max_attempts} attempts..."
-            ) from e
+            raise FailedFetchError(f"Get request to {path} failed after {self.max_attempts} attempts...") from e
