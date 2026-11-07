@@ -135,7 +135,7 @@ async def test_client_timeouts() -> None:
     assert timeout.read == 15
 
 
-@pytest.mark.parametrize("status_code", [408, 429, 500, 502, 503, 504])
+@pytest.mark.parametrize("status_code", [408, 428, 429, 500, 502, 503, 504])
 async def test_client_retries_unavailable(status_code) -> None:
     """
     each retryable code fails twice then succeeds on the third attempt.

@@ -99,7 +99,7 @@ class Client:
         # Any code not listed fails with no retry. 502 on match endpoints is
         # checked before this lookup since it means the match is not played yet
         self._codes = {
-            "unavailable": [408, 429, 500, 502, 503, 504],
+            "unavailable": [408, 428, 429, 500, 502, 503, 504],
             "bad_requests": [400, 401, 403, 404, 405, 410, 422],
         }
 
