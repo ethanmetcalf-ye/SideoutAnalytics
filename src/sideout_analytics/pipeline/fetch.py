@@ -1,13 +1,17 @@
 import asyncio
 import datetime as dt
 import json
-import time
+import logging
+import pathlib
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
 from ..db.tables import MatchState
+from ..settings import get_settings
 from .cache import CachedResponse, RawStore
 from .client import Client, FailedFetchError, NotAvailableYetError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,19 @@ class FailedRequest:
 
     endpoint: str
     error: Exception
+
+
+@dataclass(frozen=True)
+class FetchedFile:
+    """
+    A game file that is on disk, without its content. The game fetcher
+    returns these instead of CachedResponse so a season's worth of files
+    isn't held in memory, the loader reads them back from disk anyway.
+    """
+
+    endpoint: str
+    cache_file: pathlib.Path
+    content_hash: str
 
 
 def season_for(day: dt.date) -> int:
@@ -73,6 +90,9 @@ class Fetcher:
         current_date: dt.date,
         client: Client,
         raw_store: RawStore,
+        # 3 already keeps the client at its 3 req/s rate limit. timed 24 games
+        # (72 files) at 3 and at 6 on 2026-11-07, both ran at 2.9 files/s, so
+        # more workers only add open connections. revisit if latency goes up
         max_concurrent_workers: int = 3,
     ) -> None:
         self.client = client
@@ -81,7 +101,6 @@ class Fetcher:
         self.years = years
         self.sport = "volleyball-women"
         self.division = "d1"
-        self.games_index = []
         self.max_concurrent_workers = max_concurrent_workers
 
     def current_season(self) -> int:
@@ -108,6 +127,25 @@ class Fetcher:
         if cached_content is None:
             return False
         return any(game.state != MatchState.FINAL for game in games_from_scoreboard(cached_content))
+
+    def has_missing_game_files(self, details_endpoint: str) -> bool:
+        """
+        true if the cached details for a game say its boxscore or
+        play-by-play doesn't exist. details fetched just after a match can
+        say that before the stats are posted, and since final games never
+        refresh the files would never be requested (ADR-004). A few matches
+        really have no play-by-play, those refetch their details every run.
+        Cached details that can't be read count as missing too so a bad file
+        fixes itself. False when nothing is cached, get fetches a miss anyway.
+        """
+        cached_content = self.raw_store.read_cached_file(self.raw_store.map_endpoint_cache_file(details_endpoint))
+        if cached_content is None:
+            return False
+        try:
+            details = json.loads(cached_content)["contests"][0]
+            return not (details["hasBoxscore"] and details["hasPbp"])
+        except (IndexError, KeyError, json.JSONDecodeError):
+            return True
 
     async def make_requests(
         self, api_calls: list[tuple[str, bool]]
@@ -187,71 +225,86 @@ class Fetcher:
                 if first_date != date:
                     raise ValueError(f"Game {game.game_id} is on the scoreboards for both {first_date} and {date}")
                 games_index[game.game_id] = game
-        self.games_index = games_index
         return games_index, schedule_errors + scoreboard_errors
 
-    async def process_game(self, game: Game) -> tuple[dict[str, CachedResponse], list[FailedRequest]]:
+    async def process_game(self, game: Game) -> tuple[dict[str, FetchedFile], list[FailedRequest]]:
         """
         gets one final game's details, then the boxscore and play-by-play the
-        details say it has. never refreshes since a final game's files don't
-        change, so a rerun gets everything from the cache.
-        If the details fail or have no contests the rest of the game is
-        skipped and reported, there's nothing to say what else exists.
+        details say it has. a final game's files don't change so they come
+        from the cache, except the details get refreshed while they still say
+        a file is missing (has_missing_game_files).
+        If the details fail or can't be read the rest of the game is skipped
+        and reported, there's nothing to say what else exists. Returns files
+        without their content so nothing big is held in memory.
         """
-        refresh_game = False
-        game_details_request = (f"/game/{game.game_id}", refresh_game)
-        game_boxscore_request = (f"/game/{game.game_id}/boxscore", refresh_game)
-        game_playbyplay_request = (f"/game/{game.game_id}/play-by-play", refresh_game)
+        details_endpoint = f"/game/{game.game_id}"
+        details_responses, details_errors = await self.make_requests(
+            [(details_endpoint, self.has_missing_game_files(details_endpoint))]
+        )
+        if details_errors:
+            logger.warning("Could not get details for game %s, skipping game: %s", game.game_id, details_errors)
+            return {}, details_errors
+
+        details_response = details_responses[details_endpoint]
+        details_file = {details_endpoint: self.fetched_file(details_endpoint, details_response)}
+        # a malformed response is a problem with this one game, so it gets
+        # reported instead of cancelling every other game in the run
+        try:
+            details = json.loads(details_response.content)["contests"][0]
+            has_boxscore = details["hasBoxscore"]
+            has_playbyplay = details["hasPbp"]
+        except (IndexError, KeyError, json.JSONDecodeError) as e:
+            logger.warning("Unexpected details shape for game %s, skipping game: %r", game.game_id, e)
+            return details_file, [FailedRequest(details_endpoint, e)]
 
         detailed_requests = []
-        game_details_responses, game_details_errors = await self.make_requests([game_details_request])
-        if game_details_errors != []:
-            print(f"Could not process game {game.game_id}: {game_details_errors}. Skipping game...")
-            return game_details_responses, game_details_errors
-        try:
-            game_details_response = json.loads(game_details_responses[game_details_request[0]].content)["contests"][0]
-        except IndexError as e:
-            print(f"Could not process game {game.game_id}: unexpected response shape received. Skipping game...")
-            return game_details_responses, [FailedRequest(game_details_request[0], e)]
-        game_has_boxscore = game_details_response["hasBoxscore"]
-        game_has_playbyplay = game_details_response["hasPbp"]
+        if has_boxscore:
+            detailed_requests.append((f"/game/{game.game_id}/boxscore", False))
+        if has_playbyplay:
+            detailed_requests.append((f"/game/{game.game_id}/play-by-play", False))
+        detailed_responses, detailed_errors = await self.make_requests(detailed_requests)
+        if detailed_errors:
+            logger.warning("Could not get every file for game %s: %s", game.game_id, detailed_errors)
 
-        if game_has_boxscore:
-            detailed_requests.append(game_boxscore_request)
-        if game_has_playbyplay:
-            detailed_requests.append(game_playbyplay_request)
+        detailed_files = {
+            endpoint: self.fetched_file(endpoint, response) for endpoint, response in detailed_responses.items()
+        }
+        return details_file | detailed_files, detailed_errors
 
-        detailed_responses, detailed_response_errors = await self.make_requests(detailed_requests)
+    def fetched_file(self, endpoint: str, response: CachedResponse) -> FetchedFile:
+        """
+        drops the content from a response, keeping what the loader needs to
+        find and check the file.
+        """
+        return FetchedFile(endpoint, response.cache_file, response.content_hash)
 
-        return game_details_responses | detailed_responses, game_details_errors + detailed_response_errors
-
-    async def worker(
-        self, game: Game, semaphore: asyncio.Semaphore, num_tasks: dict[str, int]
-    ) -> tuple[dict[str, CachedResponse], list[FailedRequest]]:
+    async def fetch_one_game(
+        self, game: Game, semaphore: asyncio.Semaphore, progress: dict[str, int]
+    ) -> tuple[dict[str, FetchedFile], list[FailedRequest]]:
         """
         runs process_game for one game once the semaphore lets it in, and
-        prints progress every 10% of the run. progress is shared by every
-        worker, safe without a lock since the count never spans an await.
+        logs progress every 10% of the run. progress is shared by every
+        task, safe without a lock since the count never spans an await.
         """
         async with semaphore:
-            print(f"[{time.strftime('%X')}] Game {game.game_id} acquired permit. Starting work...")
+            logger.debug("Game %s starting", game.game_id)
             results = await self.process_game(game=game)
-            print(f"[{time.strftime('%X')}] Game {game.game_id} finished. Releasing permit.")
-            num_tasks["completed"] += 1
-            step = max(1, num_tasks["total"] // 10)
-            if num_tasks["completed"] % step == 0 or num_tasks["completed"] == num_tasks["total"]:
-                print(f"{num_tasks['completed']} of total {num_tasks['total']} games have been processed.")
+            logger.debug("Game %s finished", game.game_id)
+            progress["completed"] += 1
+            step = max(1, progress["total"] // 10)
+            if progress["completed"] % step == 0 or progress["completed"] == progress["total"]:
+                logger.info("%s of %s games processed", progress["completed"], progress["total"])
             return results
 
-    async def process_games_index(self, games: list[Game]) -> tuple[dict[str, CachedResponse], list[FailedRequest]]:
+    async def process_games_index(self, games: list[Game]) -> tuple[dict[str, FetchedFile], list[FailedRequest]]:
         """
         fetches every final game in the index, at most max_concurrent_workers
         games at a time on top of the client's rate limit. pre and live games
         are skipped, a later run picks them up once they're final.
-        Returns every response keyed by endpoint and every failed request,
-        same shape as get_season_index so the run log can add them up.
+        Returns every file keyed by endpoint and every failed request, same
+        shape as get_season_index so the run log can add them up.
         """
-        my_semaphore = asyncio.Semaphore(self.max_concurrent_workers)
+        semaphore = asyncio.Semaphore(self.max_concurrent_workers)
 
         task_list = []
         final_games = [game for game in games if game.state == MatchState.FINAL]
@@ -259,24 +312,23 @@ class Fetcher:
 
         async with asyncio.TaskGroup() as tg:
             for game in final_games:
-                task = tg.create_task(self.worker(game, my_semaphore, progress))
+                task = tg.create_task(self.fetch_one_game(game, semaphore, progress))
                 task_list.append(task)
 
-        print("All games have been processed")
-
-        responses, errors = {}, []
+        files, errors = {}, []
         for task in task_list:
-            game_responses, game_errors = task.result()
-            responses |= game_responses
+            game_files, game_errors = task.result()
+            files |= game_files
             errors += game_errors
-        return responses, errors
+        return files, errors
 
 
 async def main() -> None:
     """
-    runs the season index for the current season against the real API for a
-    quick check.
+    runs the season index and game fetcher for the current season against
+    the real API. per game lines show at DEBUG, progress at INFO.
     """
+    logging.basicConfig(level=get_settings().log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     today = dt.datetime.now(tz=ZoneInfo("America/New_York")).date()
     async with Client.from_settings() as my_client:
         my_rawstore = RawStore.from_settings()
@@ -288,11 +340,10 @@ async def main() -> None:
         )
 
         games, errors = await fetcher.get_season_index()  # games = {"6639890": Game(...), ...}
-        processed_games, game_errors = await fetcher.process_games_index(list(games.values()))
-        print(f"games index length: {len(games)}")
-        print(f"files fetched: {len(processed_games)}")
-        print(f"games index errors: {errors}")
-        print(f"games processing errors: {game_errors}")
+        files, game_errors = await fetcher.process_games_index(list(games.values()))
+        logger.info("games in index: %s, files on disk: %s", len(games), len(files))
+        logger.info("season index errors: %s", errors)
+        logger.info("game fetcher errors: %s", game_errors)
 
 
 if __name__ == "__main__":

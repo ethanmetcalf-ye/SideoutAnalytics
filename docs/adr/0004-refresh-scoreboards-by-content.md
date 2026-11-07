@@ -60,3 +60,18 @@ The other rules from ADR-003 are unchanged:
   should treat only final matches as settled.
 - Refreshing overwrites the file, so earlier versions of undated endpoints
   are lost on disk. Weekly poll history lives in the database.
+
+## Amendment, 2026-11-07 (W2-02)
+
+The same problem applies to game details. A `/game/{id}` response cached just
+after a match can say `hasBoxscore: false` or `hasPbp: false` before the
+stats are posted. Final games never refresh, so without a fix the box score
+or play-by-play would never be requested, and nothing would report it.
+
+The rule extends the same way: a final game's details are refreshed while
+the cached copy says a box score or play-by-play is missing, or can't be
+read. Every other file for a final game comes from the cache.
+
+- A few matches genuinely have no play-by-play, so their details are
+  re-fetched on every run. That is one small request per such match, the
+  same accepted cost as cancelled matches above.

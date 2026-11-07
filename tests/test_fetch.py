@@ -1,6 +1,7 @@
 import asyncio
 import datetime as dt
 import json
+import logging
 
 import httpx
 import pytest
@@ -440,7 +441,11 @@ async def test_fetch_game_gets_details_boxscore_and_playbyplay(raw_store) -> Non
     assert errors == []
     assert mock_api.requested_paths == list(game_paths("1"))
     assert list(responses) == list(game_paths("1"))
-    assert responses["/game/1/boxscore"].content == b'{"boxscore": true}'
+    boxscore_file = responses["/game/1/boxscore"]
+    assert boxscore_file.cache_file.read_bytes() == b'{"boxscore": true}'
+    assert boxscore_file.content_hash == cache.hash_content(b'{"boxscore": true}')
+    # files come back without their content so a season isn't held in memory
+    assert not hasattr(boxscore_file, "content")
 
 
 async def test_fetch_game_skips_missing_playbyplay(raw_store) -> None:
@@ -588,3 +593,82 @@ async def test_fetch_games_index_bounds_concurrency(raw_store) -> None:
     await fetcher.process_games_index(games)
 
     assert most_in_progress == 2
+
+
+async def test_fetch_game_refreshes_details_missing_boxscore(raw_store) -> None:
+    """
+    details cached just after a match can say there's no boxscore yet.
+    they get refreshed on the next run, and once they say it exists the
+    boxscore is fetched. otherwise it would never be requested.
+    """
+    write_cached(raw_store, "/game/1", details_body(has_boxscore=False))
+    mock_api = MockApi(game_bodies("1"))
+    async with mock_api.client() as client:
+        responses, errors = await make_fetcher(raw_store, client).process_game(fetch.Game("1", 100, MatchState.FINAL))
+
+    assert errors == []
+    assert mock_api.requested_paths == list(game_paths("1"))
+    assert "/game/1/boxscore" in responses
+
+
+async def test_fetch_game_complete_details_come_from_cache(raw_store) -> None:
+    """
+    details that say every file exists are never refreshed.
+    """
+    for endpoint, body in game_bodies("1").items():
+        write_cached(raw_store, endpoint, body)
+    mock_api = MockApi({})
+    async with mock_api.client() as client:
+        responses, errors = await make_fetcher(raw_store, client).process_game(fetch.Game("1", 100, MatchState.FINAL))
+
+    assert errors == []
+    assert mock_api.requested_paths == []
+    assert list(responses) == list(game_paths("1"))
+
+
+@pytest.mark.parametrize(
+    "details",
+    [b'{"contests": [{"hasPbp": true}]}', b'{"games": []}', b"<html>error</html>"],
+    ids=["missing hasBoxscore", "missing contests", "not json"],
+)
+async def test_fetch_game_bad_details_only_skips_that_game(raw_store, details) -> None:
+    """
+    a malformed details response is reported for that game. it doesn't
+    cancel the other games in the run.
+    """
+    games = [fetch.Game("1", 100, MatchState.FINAL), fetch.Game("2", 200, MatchState.FINAL)]
+    mock_api = MockApi({"/game/1": details} | game_bodies("2"))
+    async with mock_api.client() as client:
+        responses, errors = await make_fetcher(raw_store, client).process_games_index(games)
+
+    assert [error.endpoint for error in errors] == ["/game/1"]
+    assert "/game/2/boxscore" in responses
+
+
+def test_fetch_bad_cached_details_count_as_missing(raw_store) -> None:
+    """
+    cached details that can't be read get refreshed, so a bad file fixes
+    itself on the next run.
+    """
+    write_cached(raw_store, "/game/1", b"<html>error</html>")
+    fetcher = make_fetcher(raw_store, client=None)
+    assert fetcher.has_missing_game_files("/game/1")
+
+
+async def test_fetch_games_index_logs_progress_at_info(raw_store, caplog) -> None:
+    """
+    progress lines show at INFO. the per game lines are DEBUG so they don't
+    bury the progress on a full season.
+    """
+    games = [fetch.Game(str(game_id), 100, MatchState.FINAL) for game_id in range(3)]
+    bodies = {}
+    for game_id in range(3):
+        bodies |= game_bodies(str(game_id))
+    mock_api = MockApi(bodies)
+    caplog.set_level(logging.INFO, logger="sideout_analytics.pipeline.fetch")
+    async with mock_api.client() as client:
+        await make_fetcher(raw_store, client).process_games_index(games)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert "3 of 3 games processed" in messages
+    assert not any("starting" in message for message in messages)

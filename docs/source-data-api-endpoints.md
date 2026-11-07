@@ -9,6 +9,7 @@ Unofficial NCAA data API by henrygd. It proxies data from ncaa.com.
 - Base URL: `https://ncaa-api.henrygd.me`
 - Auth: none
 - Rate limit: 3 requests/second per IP on the public instance. The limit is not in the API's code, so a self-hosted instance (`docker run --rm -p 3000:3000 henrygd/ncaa-api`) has none.
+- HTTP 428: the public instance returned `428 Precondition Required` on game endpoints during bursts of concurrent requests (2026-11-07). The same requests returned 200 when sent one at a time. The API's own code only sends 400, 401 and 404, so the 428 comes from the proxy layers in front of it (Cloudflare, BunnyCDN, Caddy). The client treats 428 as retryable.
 - Format: JSON, except `/logo/...` which returns SVG.
 
 All endpoints below were tested against the live API on 2026-10-06 unless marked **untested** or **broken**.
