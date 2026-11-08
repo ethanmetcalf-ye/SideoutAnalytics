@@ -161,7 +161,8 @@ class TeamSeason(Base):
     season: Mapped[Year] = mapped_column(ForeignKey("season.year"), primary_key=True)
     source_team_id: Mapped[str]
     division: Mapped[Division]
-    conference_id: Mapped[int] = mapped_column(ForeignKey("conference.conference_id"))
+    # NULL for non-NCAA opponents, schema.md decision 13
+    conference_id: Mapped[int | None] = mapped_column(ForeignKey("conference.conference_id"))
     head_coach: Mapped[str | None]
     assistant_coaches: Mapped[list[str] | None]
 

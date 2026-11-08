@@ -12,6 +12,7 @@ Decisions (W2-03):
   bad row never silently drops out of a match.
 - Play text that matches no known pattern isn't bad, it becomes
   PlayType.OTHER with no players.
+- "Team" in place of a name ("Service ace (Team).") names no player.
 - Play-by-play is cleaned here so the output is one Play per rally: starters
   and subs lines, plays without a score, and rows repeated back to back are
   skipped.
@@ -63,6 +64,9 @@ PLAY_PATTERNS = [
     (PlayType.BALL_HANDLING_ERROR, re.compile(r"Ball handling error by .+?\.?")),
 ]
 LINEUP_PATTERN = re.compile(r".+ (?:starters|subs):.*")
+BLOCKER_SEPARATOR = re.compile(r"[,;]")
+# "Service ace (Team)." when the receiver wasn't recorded
+NO_PLAYER = "Team"
 
 
 class ParseError(Exception):
@@ -212,6 +216,17 @@ class Play(Record):
     players: tuple[PlayPlayer, ...]
 
 
+class ScoreboardGame(Record):
+    """
+    what the scoreboard knows about a game that the details don't:
+    match.bracket_round and each team's team_season conference, keyed by
+    seoname. A conference is None for a non-NCAA team.
+    """
+
+    bracket_round: str | None
+    conferences: dict[str, str | None]
+
+
 def blank_to_none[T](value: T) -> T | None:
     """
     the API writes missing values as "" or null depending on the field,
@@ -356,22 +371,29 @@ def parse_boxscore(content: bytes) -> BoxScore:
         raise ParseError(f"Can't parse box score for game {game_id}: {e}") from e
 
 
-def parse_scoreboard_rounds(content: bytes) -> dict[str, str | None]:
+def parse_scoreboard(content: bytes) -> dict[str, ScoreboardGame]:
     """
-    each game's NCAA tournament round from a scoreboard file, keyed by
-    gameID, for match.bracket_round since the details don't have it. The
-    scoreboard writes rounds as numbers (1 is the first round) and "" for a
-    game outside the tournament, which is None here. Raises ParseError on a
-    missing field.
+    the scoreboard's part of each game, keyed by gameID: the details have
+    no tournament round and no conferences. The scoreboard writes rounds as
+    numbers (1 is the first round) and "" outside the tournament, and a
+    non-NCAA team's conference as "", both are None here. Raises ParseError
+    on a missing field.
     """
     try:
-        rounds = {}
+        games = {}
         for entry in json.loads(content)["games"]:
             game = entry["game"]
             bracket_round = blank_to_none(game["bracketRound"])
-            # text in the schema, so round 1 is "1"
-            rounds[game["gameID"]] = None if bracket_round is None else str(bracket_round)
-        return rounds
+            games[game["gameID"]] = ScoreboardGame(
+                # text in the schema, so round 1 is "1"
+                bracket_round=None if bracket_round is None else str(bracket_round),
+                # always one conference per team in 2025 and 2026
+                conferences={
+                    game[side]["names"]["seo"]: blank_to_none(game[side]["conferences"][0]["conferenceSeo"])
+                    for side in ("home", "away")
+                },
+            )
+        return games
     except (AttributeError, KeyError, IndexError, TypeError, ValueError) as e:
         raise ParseError(f"Can't parse scoreboard: {e}") from e
 
@@ -387,11 +409,17 @@ def classify_play(text: str) -> tuple[PlayType, list[PlayPlayer]]:
             continue
         players = []
         for group, names in found.groupdict().items():
-            if not names:
+            # "block by )" happens, and "Team" stands in for a receiver
+            # nobody recorded, neither names a player
+            if not names or names == NO_PLAYER:
                 continue
             if group == "blockers":
-                # "block by )" happens, so empty names are dropped
-                players += [PlayPlayer(name=name, role=PlayRole.BLOCKER) for name in names.split(", ") if name]
+                # blockers are split by ", " or "; " depending on the feed
+                players += [
+                    PlayPlayer(name=name.strip(), role=PlayRole.BLOCKER)
+                    for name in BLOCKER_SEPARATOR.split(names)
+                    if name.strip()
+                ]
             else:
                 players.append(PlayPlayer(name=names, role=PlayRole(group)))
         return play_type, players

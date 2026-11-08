@@ -198,6 +198,10 @@ instead of failing the match or being guessed:
     a `COALESCE`.
   - **Why keep the match:** skipping it would drop a win from the D1 team's
     record and skew the ratings. The 2025 season has 16 of these matches.
+  - **No conference:** the scoreboard lists these teams with a blank
+    conference, so their `team_season.conference_id` is NULL. Unlike
+    division, an `other` conference row would show up in every conference
+    list and standings page, and there's nothing to group by.
 - **Set attempts not recorded:** some box scores leave `setAttempts` blank
   for every player in the match, while the other counts are filled in.
   `box_score_line.set_attempts` is NULL for those rows.
@@ -263,7 +267,7 @@ One row per team per season.
 | season | int | **PK**, FK → `season` |
 | source_team_id | text | API `teamId` for that season |
 | division | text | `d1`, `d2`, `d3`, or `other` for non-NCAA opponents (decision 13) |
-| conference_id | bigint | FK → `conference` |
+| conference_id | bigint | Nullable. FK → `conference`. NULL for non-NCAA opponents (decision 13) |
 | head_coach | text | Nullable. Not in the API; entered manually |
 | assistant_coaches | text[] | Nullable. Not in the API; entered manually |
 

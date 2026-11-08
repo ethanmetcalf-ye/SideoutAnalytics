@@ -121,6 +121,13 @@ Response:
 - Some box scores leave `firstName` and `lastName` empty for every player, with only the jersey `number` set. This was seen on a match with no play-by-play.
 - In 195 matches (2025 and 2026), the box score's `setAttempts` is `""` for every player, while the other counts are filled in and the team total still has a value. No other count has been seen blank.
 - Scoreboard `bracketRound` is a number for NCAA tournament matches, from 1 (first round) to 6 (the final), and `""` otherwise.
+- Scoreboard `conferences` always has one entry per team. `conferenceName` is blank, and `conferenceSeo` is the conference's slug (`big-ten`, `sec`). It's `""` for non-NCAA opponents (20 team sides across 2025 and 2026). The scoreboard's `seo` matches the details' `seoname`.
+- Checked by loading all 7,782 games in the 2025 and 2026 caches (W2-04):
+  - **Whole name in `lastName`:** 28 box score rows have `firstName` blank and the full name in `lastName` (`'' 'Caroline Przystup'`), sometimes with a double space.
+  - **Semicolon blockers:** 10,630 plays write `(block by A; B)` instead of `(block by A, B)`.
+  - **`Team` as a name:** 15,957 plays are `Service ace (Team).`, when the receiver wasn't recorded.
+  - **Opponent in `(from Y)`:** about 2% of kills name a player on the other team as `Y`, likely an overpass rather than a set.
+  - **Names not in the box score:** some play names have no box score row, mostly misspellings and names with broken encoding (`Ayse GÃŒvener`). With the opponent setters above, 22,289 of 1,988,987 play names (1.1%) match no box score row of the team their role puts them on.
 
 ## Rankings
 

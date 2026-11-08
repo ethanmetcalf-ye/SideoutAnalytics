@@ -38,6 +38,7 @@ Add dependencies with `uv add <pkg>` (or `uv add --dev <pkg>`). Never edit
 | `src/sideout_analytics/pipeline/cache.py` | Raw response cache: one file per endpoint under `data_directory/raw`, atomic writes. Fetch through `RawStore.get(client, endpoint)` so cache hits skip the network; when to pass `refresh=True` is in ADR-004. |
 | `src/sideout_analytics/pipeline/fetch.py` | Fetcher: which endpoints to request and when to refresh them (ADR-004), the season index from schedules and scoreboards, and the game fetcher: details, box score and play-by-play for every final game with bounded concurrency, returned as `FetchedFile`s (path and hash, no content). Takes an open `Client` and a `RawStore`; failed requests come back as `FailedRequest`s, so callers must check them. |
 | `src/sideout_analytics/pipeline/parse.py` | Parsers: cached file bytes in, frozen pydantic records out, keyed by source IDs. No I/O and no database access. A bad file raises `ParseError`; the decisions on cleaning and blanks are in the module docstring. |
+| `src/sideout_analytics/db/loader.py` | Loader: one game's parsed records into Postgres in one transaction, safe to run twice. Shared rows are upserted on their source keys, the game's own rows are replaced. Open a connection with `connect(database_url)`; a game that doesn't fit the schema raises `LoadError`. |
 | `tests/` | pytest tests, one `test_<module>.py` per module. |
 | `docs/adr/` | Architecture decisions, `NNNN-short-title.md`. |
 | `docs/schema.md` | Database design. The source of truth for tables, columns and constraints; migrations implement it. |
@@ -54,6 +55,10 @@ Add dependencies with `uv add <pkg>` (or `uv add --dev <pkg>`). Never edit
 - Tests must not depend on the developer's `.env` or shell. Use the
   `isolated_env` fixture in `tests/conftest.py`: it clears settings env vars,
   `chdir`s to `tmp_path`, and calls `get_settings.cache_clear()`.
+- Tests that need Postgres take the `database` fixture. It uses
+  `TEST_DATABASE_URL` (the local `DATABASE_URL` works), builds a throwaway
+  schema from `tables.py` and drops it afterward, and skips the test when the
+  variable isn't set.
 - Tests never touch the network or sleep. Pass `httpx.MockTransport` to the
   API client and record sleeps instead of waiting.
 - Record significant design decisions as a new ADR.

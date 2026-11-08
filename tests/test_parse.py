@@ -13,12 +13,13 @@ from sideout_analytics.pipeline.parse import (
     parse_boxscore,
     parse_game_details,
     parse_play_by_play,
-    parse_scoreboard_rounds,
+    parse_scoreboard,
     scores_are_swapped,
 )
 
 RAW_FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "raw"
 GAME_FIXTURES = RAW_FIXTURES / "game"
+SCOREBOARD_FIXTURE = RAW_FIXTURES / "scoreboard" / "volleyball-women" / "d1" / "2025" / "12" / "05.json"
 ALL_GAMES = ["6625808", "6628152", "6639889", "6624785", "6482569", "6500656"]
 PLAY_BY_PLAY_GAMES = ["6625808", "6628152", "6639889", "6482569", "6500656"]
 # 6482569 lists set 1's last two rallies out of order (25 before 24), so
@@ -297,27 +298,55 @@ def test_parse_boxscore_missing_field_raises():
 # scoreboard
 
 
-def test_parse_scoreboard_rounds_reads_tournament_rounds():
+def scoreboard_entry(bracket_round: object = "", home_conference: str = "big-ten") -> bytes:
+    """
+    a one game scoreboard with only the fields parse_scoreboard reads.
+    """
+    return json.dumps(
+        {
+            "games": [
+                {
+                    "game": {
+                        "gameID": "1",
+                        "bracketRound": bracket_round,
+                        "home": {"names": {"seo": "home-u"}, "conferences": [{"conferenceSeo": home_conference}]},
+                        "away": {"names": {"seo": "away-u"}, "conferences": [{"conferenceSeo": "sec"}]},
+                    }
+                }
+            ]
+        }
+    ).encode()
+
+
+def test_parse_scoreboard_reads_tournament_rounds():
     # the first two rounds of the 2025 NCAA tournament were on 2025-12-05
-    content = (RAW_FIXTURES / "scoreboard" / "volleyball-women" / "d1" / "2025" / "12" / "05.json").read_bytes()
+    games = parse_scoreboard(SCOREBOARD_FIXTURE.read_bytes())
 
-    rounds = parse_scoreboard_rounds(content)
-
-    assert rounds["6500656"] == "1"
-    assert sorted(set(rounds.values())) == ["1", "2"]
+    assert games["6500656"].bracket_round == "1"
+    assert sorted({game.bracket_round for game in games.values()}) == ["1", "2"]
 
 
-def test_parse_scoreboard_rounds_outside_tournament_is_none():
-    content = json.dumps({"games": [{"game": {"gameID": "1", "bracketRound": ""}}]}).encode()
+def test_parse_scoreboard_reads_conferences():
+    games = parse_scoreboard(SCOREBOARD_FIXTURE.read_bytes())
 
-    assert parse_scoreboard_rounds(content) == {"1": None}
+    assert games["6500656"].conferences == {"nebraska": "big-ten", "long-island": "nec"}
 
 
-def test_parse_scoreboard_rounds_missing_field_raises():
+def test_parse_scoreboard_outside_tournament_is_none():
+    assert parse_scoreboard(scoreboard_entry())["1"].bracket_round is None
+
+
+def test_parse_scoreboard_blank_conference_is_none():
+    games = parse_scoreboard(scoreboard_entry(home_conference=""))
+
+    assert games["1"].conferences == {"home-u": None, "away-u": "sec"}
+
+
+def test_parse_scoreboard_missing_field_raises():
     content = json.dumps({"games": [{"game": {"gameID": "1"}}]}).encode()
 
     with pytest.raises(ParseError, match="bracketRound"):
-        parse_scoreboard_rounds(content)
+        parse_scoreboard(content)
 
 
 # play text
@@ -347,7 +376,17 @@ def test_parse_scoreboard_rounds_missing_field_raises():
             PlayType.ATTACK_ERROR,
             [("Audrey Flanagan", PlayRole.ATTACKER)],
         ),
+        (
+            "Attack error by Aisha Aiono (block by Jovana Zelenovic; Milla Lugo).",
+            PlayType.ATTACK_ERROR,
+            [
+                ("Aisha Aiono", PlayRole.ATTACKER),
+                ("Jovana Zelenovic", PlayRole.BLOCKER),
+                ("Milla Lugo", PlayRole.BLOCKER),
+            ],
+        ),
         ("Service ace (Haley Patterson).", PlayType.SERVICE_ACE, [("Haley Patterson", PlayRole.ACED_RECEIVER)]),
+        ("Service ace (Team).", PlayType.SERVICE_ACE, []),
         ("Service error.", PlayType.SERVICE_ERROR, []),
         ("Bad set by Kaeley Walz.", PlayType.BAD_SET, [("Kaeley Walz", PlayRole.SETTER)]),
         ("Ball handling error by Lynney Tarnow", PlayType.BALL_HANDLING_ERROR, []),
