@@ -25,14 +25,15 @@ Decisions:
 - Names in the play text are matched to the box score lines of this match,
   on the team the role puts them on. A name with no line is skipped and
   counted, the play itself is kept.
-- A kill's "(from B)" names the scoring team's setter, except about twice a
-  game B is on the other team: the last touch before the kill, usually an
-  overpass. Box score assists count the same-team ones and not these
-  (issue #75), so B is linked with role last_touch instead of setter.
-  Only when the kill's attacker matched on the scoring team, so attacker
-  and B really are on different teams. In a rally credited to the wrong
-  team both are on the other side, B is a normal setter, and it's left
-  unmatched for reconciliation (W2-06).
+- A kill's attacker and its "(from B)" player are placed by looking their
+  names up in this match's box score, on either team, not by the rally's
+  teamId (wrong in some rallies, fixed by W2-06). B on the attacker's team is
+  an assist, role setter. B on the other team is the last touch before the
+  kill, usually an overpass, role overpass: box score assists count the
+  same-team ones and not these (issue #75). When the box score can't
+  settle it, the rally's teamId breaks the tie, see link_kill. Only what
+  neither can decide is left unmatched. The setter role is the
+  "(from ...)" slot whatever the player's position.
 - match.pbp_reconciled and the play-by-play columns of team_set_stats are
   left for reconciliation, the loader writes NULL.
 - Conferences are the scoreboard's seo names (big-ten), the scoreboard's
@@ -115,7 +116,8 @@ def name_key(first_name: str | None, last_name: str | None) -> str:
 
 def on_scoring_team(play_type: PlayType, role: PlayRole) -> bool:
     """
-    whether a player named in a play is on the team that won the rally.
+    whether a player named in a play is on the team that won the rally,
+    for every play but kills, which place their players by name.
     Kill attackers and setters and every blocker are, the attacker who made
     an error, the setter of a bad set and an aced receiver aren't.
     """
@@ -497,6 +499,50 @@ def insert_team_set_stats(
     )
 
 
+def link_kill(
+    play: parse.Play, by_name: dict[str, list[tuple[int, int]]], scoring_team_id: int
+) -> tuple[list[tuple[int, PlayRole]], int]:
+    """
+    the (player_id, role) rows for a kill's attacker and "(from ...)"
+    player, and how many of its names weren't linked.
+
+    The box score decides when it can: each name goes on the one team that
+    has it, and the "(from ...)" player is a setter on the attacker's team
+    and an overpass on the other. The rally's teamId, right in 99.8% of
+    rallies, breaks ties the box score can't: a name on both teams is the
+    scoring team's, and when the attacker can't be placed, a "(from ...)"
+    player on the scoring team is a setter since both signals agree.
+    Anything else is left unmatched.
+    """
+
+    def place(name: str) -> tuple[int, int] | None:
+        found = by_name.get(name_key(None, name), [])
+        if len(found) == 1:
+            return found[0]
+        # on both teams the scoring team's, on neither nothing
+        return next((team_and_player for team_and_player in found if team_and_player[0] == scoring_team_id), None)
+
+    attacker = next((place(named.name) for named in play.players if named.role == PlayRole.ATTACKER), None)
+    linked = []
+    missed = 0
+    for named in play.players:
+        placed = attacker if named.role == PlayRole.ATTACKER else place(named.name)
+        if placed is None:
+            missed += 1
+            continue
+        team_id, player_id = placed
+        role = named.role
+        if role == PlayRole.SETTER:
+            if attacker is not None:
+                role = PlayRole.SETTER if team_id == attacker[0] else PlayRole.OVERPASS
+            elif team_id != scoring_team_id:
+                # no attacker to compare with and teamId says other team
+                missed += 1
+                continue
+        linked.append((player_id, role))
+    return linked, missed
+
+
 def insert_plays(
     cursor: psycopg.Cursor,
     match_id: int,
@@ -538,33 +584,30 @@ def insert_plays(
 
     # the other team is whichever one didn't score
     other_team = {seoname: next(t for s, t in team_ids.items() if s != seoname) for seoname in team_ids}
+    # every (team_id, player_id) with each name, for placing a kill's players
+    by_name = {}
+    for (team_id, key), player_id in players.items():
+        by_name.setdefault(key, []).append((team_id, player_id))
+
     unmatched = 0
     # a set, since "block by A, A" would be the same row twice
     rows = set()
     for play in plays:
+        play_id = play_ids[(play.set_number, play.sequence)]
+        if play.play_type == PlayType.KILL:
+            linked, missed = link_kill(play, by_name, team_ids[play.scoring_seoname])
+            rows |= {(play_id, player_id, role.value) for player_id, role in linked}
+            unmatched += missed
+            continue
         scoring_team_id = team_ids[play.scoring_seoname]
-        attacker_on_scoring = any(
-            named.role == PlayRole.ATTACKER and (scoring_team_id, name_key(None, named.name)) in players
-            for named in play.players
-        )
         for named in play.players:
             on_scoring = on_scoring_team(play.play_type, named.role)
             team_id = scoring_team_id if on_scoring else other_team[play.scoring_seoname]
-            key = name_key(None, named.name)
-            player_id = players.get((team_id, key))
-            role = named.role
-            if (
-                player_id is None
-                and play.play_type == PlayType.KILL
-                and role == PlayRole.SETTER
-                and attacker_on_scoring
-            ):
-                player_id = players.get((other_team[play.scoring_seoname], key))
-                role = PlayRole.LAST_TOUCH
+            player_id = players.get((team_id, name_key(None, named.name)))
             if player_id is None:
                 unmatched += 1
                 continue
-            rows.add((play_ids[(play.set_number, play.sequence)], player_id, role.value))
+            rows.add((play_id, player_id, named.role.value))
 
     if rows:
         with cursor.copy("COPY play_player (play_id, player_id, role) FROM STDIN") as copy:

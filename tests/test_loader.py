@@ -2,9 +2,11 @@ import pathlib
 
 import pytest
 
-from sideout_analytics.db.loader import LoadError, ParsedGame, load_game, name_key, on_scoring_team
+from sideout_analytics.db.loader import LoadError, ParsedGame, link_kill, load_game, name_key, on_scoring_team
 from sideout_analytics.db.tables import Base, PlayRole, PlayType
 from sideout_analytics.pipeline.parse import (
+    Play,
+    PlayPlayer,
     ScoreboardGame,
     parse_boxscore,
     parse_game_details,
@@ -15,7 +17,7 @@ from sideout_analytics.pipeline.parse import (
 RAW_FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "raw"
 GAME_FIXTURES = RAW_FIXTURES / "game"
 SCOREBOARD_FIXTURE = RAW_FIXTURES / "scoreboard" / "volleyball-women" / "d1" / "2025" / "12" / "05.json"
-ALL_GAMES = ["6625808", "6628152", "6639889", "6624785", "6482569", "6500656", "6479084"]
+ALL_GAMES = ["6625808", "6628152", "6639889", "6624785", "6482569", "6500656", "6479084", "6479354"]
 
 
 def fixture_game(game_id: str) -> ParsedGame:
@@ -414,37 +416,95 @@ def test_load_game_play_team_not_in_details_raises(database, ingest_run_id):
         load_game(database, ParsedGame(game.match, game.scoreboard, game.box_score, plays), ingest_run_id)
 
 
-def test_load_game_cross_team_from_is_last_touch(database, ingest_run_id):
-    load_game(database, fixture_game("6625808"), ingest_run_id)
-
-    # Kill by Ashlyn Anderson (from Greta Pleuss), Pleuss plays for the other team
-    rows = database.execute(
+def kill_roles(connection, set_number: int, sequence: int) -> list[tuple[str, bool]]:
+    """
+    each linked player's role in a rally and whether the player is on the
+    team the rally is credited to.
+    """
+    return connection.execute(
         """
         SELECT play_player.role, box_score_line.team_id = play.scoring_team_id
         FROM play
         JOIN play_player USING (play_id)
         JOIN box_score_line ON box_score_line.match_id = play.match_id
             AND box_score_line.player_id = play_player.player_id
-        WHERE play.play_text = 'Kill by Ashlyn Anderson (from Greta Pleuss).'
+        WHERE play.set_number = %s AND play.sequence = %s
         ORDER BY play_player.role
-        """
+        """,
+        (set_number, sequence),
     ).fetchall()
-    assert rows == [("attacker", True), ("last_touch", False)]
 
 
-def test_load_game_mislabelled_rally_is_not_last_touch(database, ingest_run_id):
-    game = fixture_game("6479084")
+def test_load_game_from_on_other_team_is_overpass(database, ingest_run_id):
+    load_game(database, fixture_game("6625808"), ingest_run_id)
 
-    result = load_game(database, game, ingest_run_id)
+    # set 1 rally 21: Kill by Ashlyn Anderson (from Greta Pleuss), Pleuss
+    # plays for the other team
+    assert kill_roles(database, 1, 21) == [("attacker", True), ("overpass", False)]
+
+
+def test_load_game_mislabelled_rally_places_kill_by_name(database, ingest_run_id):
+    load_game(database, fixture_game("6479084"), ingest_run_id)
 
     # set 2 rally 19 is credited to Ole Miss, but attacker and setter both
-    # play for Louisiana, so the setter is a setter in a mislabelled rally
-    roles = database.execute(
-        """
-        SELECT play_player.role FROM play JOIN play_player USING (play_id)
-        WHERE play.set_number = 2 AND play.sequence = 19
-        """
-    ).fetchall()
-    assert roles == []
-    assert fetch_value(database, "SELECT count(*) FROM play_player WHERE role = 'last_touch'") == 0
-    assert result.unmatched_names >= 2
+    # play for Louisiana: an assist, linked to the Louisiana players. The
+    # rally itself stays on Ole Miss until W2-06
+    assert kill_roles(database, 2, 19) == [("attacker", False), ("setter", False)]
+
+
+def test_load_game_kill_name_on_both_teams_goes_to_scoring_team(database, ingest_run_id):
+    load_game(database, fixture_game("6479354"), ingest_run_id)
+
+    # both teams have a Taylor Williams, the rallies are Duke's
+    # set 2 rally 20: Kill by Taylor Williams (from Millie Muir)
+    assert kill_roles(database, 2, 20) == [("attacker", True), ("setter", True)]
+    # set 2 rally 26: Kill by Avery Hamlin (from Taylor Williams)
+    assert kill_roles(database, 2, 26) == [("attacker", True), ("setter", True)]
+
+
+# kill placement without a database: players 1 and 2 on team 10, 3 on
+# team 20, and "same name" on both
+KILL_PLAYERS = {
+    "ann hitter": [(10, 1)],
+    "sue setter": [(10, 2)],
+    "olga opponent": [(20, 3)],
+    "same name": [(10, 4), (20, 5)],
+}
+
+
+def kill(attacker: str, from_player: str | None) -> Play:
+    players = [PlayPlayer(name=attacker, role=PlayRole.ATTACKER)]
+    if from_player is not None:
+        players.append(PlayPlayer(name=from_player, role=PlayRole.SETTER))
+    return Play(
+        set_number=1,
+        sequence=1,
+        play_type=PlayType.KILL,
+        scoring_seoname="team-10",
+        serving_seoname=None,
+        play_text="",
+        home_score=1,
+        away_score=0,
+        players=tuple(players),
+    )
+
+
+@pytest.mark.parametrize(
+    ("attacker", "from_player", "scoring_team_id", "linked", "missed"),
+    [
+        # the box score decides, whatever teamId says
+        ("Ann Hitter", "Sue Setter", 20, [(1, PlayRole.ATTACKER), (2, PlayRole.SETTER)], 0),
+        ("Ann Hitter", "Olga Opponent", 10, [(1, PlayRole.ATTACKER), (3, PlayRole.OVERPASS)], 0),
+        # a name on both teams is the scoring team's
+        ("Same Name", "Sue Setter", 10, [(4, PlayRole.ATTACKER), (2, PlayRole.SETTER)], 0),
+        ("Same Name", "Olga Opponent", 20, [(5, PlayRole.ATTACKER), (3, PlayRole.SETTER)], 0),
+        ("Ann Hitter", "Same Name", 10, [(1, PlayRole.ATTACKER), (4, PlayRole.SETTER)], 0),
+        # attacker unplaced: a from player on the scoring team is a setter
+        ("Nobody Known", "Sue Setter", 10, [(2, PlayRole.SETTER)], 1),
+        # attacker unplaced and from player on the other team: undecidable
+        ("Nobody Known", "Olga Opponent", 10, [], 2),
+        ("Ann Hitter", None, 20, [(1, PlayRole.ATTACKER)], 0),
+    ],
+)
+def test_link_kill(attacker, from_player, scoring_team_id, linked, missed):
+    assert link_kill(kill(attacker, from_player), KILL_PLAYERS, scoring_team_id) == (linked, missed)
