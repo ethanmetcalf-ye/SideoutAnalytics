@@ -185,6 +185,29 @@ last updated it, and `result_first_seen_at`.
   people and for the AI assistant that writes SQL against these tables (W7).
 - **Tradeoff:** one more table and one more join for rally-level queries.
 
+### 13. Gaps the source leaves are stored as gaps
+
+Two things the source leaves out on purpose are stored as their own values
+instead of failing the match or being guessed:
+
+- **Non-NCAA opponents:** some D1 teams play NAIA and other non-NCAA teams,
+  which have no `divisionName`. Their `team_season.division` is `other`.
+  - **Why `other` and not NULL:** the source does say something (no NCAA
+    division), so it isn't unknown, and decision 5 already uses NULL to mean
+    unknown. Grouping by division in the ratings gets its own bucket without
+    a `COALESCE`.
+  - **Why keep the match:** skipping it would drop a win from the D1 team's
+    record and skew the ratings. The 2025 season has 16 of these matches.
+- **Set attempts not recorded:** some box scores leave `setAttempts` blank
+  for every player in the match, while the other counts are filled in.
+  `box_score_line.set_attempts` is NULL for those rows.
+  - **Why NULL and not 0:** a 0 would push down every setter's average.
+    Queries that use set attempts skip NULL rows, which `AVG` and `SUM` do by
+    default.
+  - **Only this count:** `setAttempts` is the only count the source has been
+    seen to leave blank (195 matches in 2025 and 2026). Any other blank
+    count still fails the file, so a new gap gets its own decision.
+
 ## Tables
 
 Types are Postgres types. Columns are `NOT NULL` unless marked nullable. IDs
@@ -239,7 +262,7 @@ One row per team per season.
 | team_id | bigint | **PK**, FK → `team` |
 | season | int | **PK**, FK → `season` |
 | source_team_id | text | API `teamId` for that season |
-| division | text | `d1`, `d2`, or `d3` |
+| division | text | `d1`, `d2`, `d3`, or `other` for non-NCAA opponents (decision 13) |
 | conference_id | bigint | FK → `conference` |
 | head_coach | text | Nullable. Not in the API; entered manually |
 | assistant_coaches | text[] | Nullable. Not in the API; entered manually |
@@ -330,7 +353,7 @@ One row per player per match.
 | attack_errors | smallint | |
 | attack_attempts | smallint | |
 | assists | smallint | |
-| set_attempts | smallint | |
+| set_attempts | smallint | Nullable. NULL when the match has no set attempts recorded (decision 13) |
 | set_errors | smallint | |
 | aces | smallint | |
 | serve_errors | smallint | |
@@ -468,7 +491,7 @@ W1-05 implements these as `CHECK` constraints.
 | Table | Constraint |
 | --- | --- |
 | `season` | `start_date <= end_date` |
-| `team_season` | `division IN ('d1', 'd2', 'd3')` |
+| `team_season` | `division IN ('d1', 'd2', 'd3', 'other')` |
 | `match` | `state IN ('pre', 'live', 'final')` |
 | `match_team` | `sets_won BETWEEN 0 AND 3`, `seed > 0`, `rank_at_match > 0` |
 | `box_score_line` | `sets_played BETWEEN 0 AND 5`; every count column `>= 0` |

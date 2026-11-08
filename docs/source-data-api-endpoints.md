@@ -109,6 +109,18 @@ Response:
 - `playText` is free text: `Kill by X (from Y).`, `Attack error by X (block by A, B).`, `Service ace (X).`, `Service error.`, `Bad set by X.`, `Ball handling error by X.`, `<Team> starters: ...` and `<Team> subs: ...`.
 - On `Service ace (X)`, X is the receiver who was aced. The server is not named.
 - Quality varies by match. Some feeds repeat plays without a score, and `homeScore`/`visitorScore` are null on lineup entries.
+- Checked against 64 cached games in November 2026:
+  - **Swapped scores:** in 10 games (all 2026), `homeScore` and `visitorScore` are swapped for the whole match. Every set's last score is the reverse of the linescores, while `isHome` and the point winner's `teamId` are correct.
+  - **Repeated rows:** some feeds list most rallies twice back to back, with the same text, score and clock.
+  - **Scoreless plays:** `Ball handling error  by X` rows (with a double space) have no score, and the score doesn't change.
+  - **Double spaces in names:** the feed writes `Ava  Grevengoed` where the box score has `Ava Grevengoed`.
+  - **Truncated or inconsistent feeds:** a few games have a feed that stops before the set ends, or a handful of rallies whose `teamId` doesn't match the side whose score went up.
+- `/game/{id}` details write `gameState` as one letter: `F`, `P` or `I` (final, pre, live). The scoreboard spells them out.
+- Linescore `period` labels: in 2025, 442 matches use `1st`, `2nd`, `3rd`, `4th` and `5th`, while the rest use `1` to `5`. Every 2026 match uses digits.
+- Non-NCAA opponents (NAIA teams such as Tougaloo, Dillard and Lindsey Wilson) have `divisionName` and `division` set to null. That happened in 16 matches in 2025.
+- Some box scores leave `firstName` and `lastName` empty for every player, with only the jersey `number` set. This was seen on a match with no play-by-play.
+- In 195 matches (2025 and 2026), the box score's `setAttempts` is `""` for every player, while the other counts are filled in and the team total still has a value. No other count has been seen blank.
+- Scoreboard `bracketRound` is a number for NCAA tournament matches, from 1 (first round) to 6 (the final), and `""` otherwise.
 
 ## Rankings
 

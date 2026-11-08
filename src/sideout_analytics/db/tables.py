@@ -42,6 +42,8 @@ class Division(enum.StrEnum):
     D1 = "d1"
     D2 = "d2"
     D3 = "d3"
+    # non-NCAA opponents (NAIA and others), schema.md decision 13
+    OTHER = "other"
 
 
 class MatchState(enum.StrEnum):
@@ -295,7 +297,7 @@ class BoxScoreLine(Base):
     attack_errors: Mapped[Small]
     attack_attempts: Mapped[Small]
     assists: Mapped[Small]
-    set_attempts: Mapped[Small]
+    set_attempts: Mapped[Small | None]
     set_errors: Mapped[Small]
     aces: Mapped[Small]
     serve_errors: Mapped[Small]
