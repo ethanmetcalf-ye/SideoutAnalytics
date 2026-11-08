@@ -67,6 +67,9 @@ class PlayRole(enum.StrEnum):
     SETTER = "setter"
     BLOCKER = "blocker"
     ACED_RECEIVER = "aced_receiver"
+    # the other team's player in a kill's "(from ...)", the last touch before
+    # the kill (usually an overpass), not a set. schema.md play_player
+    LAST_TOUCH = "last_touch"
 
 
 class IngestStatus(enum.StrEnum):

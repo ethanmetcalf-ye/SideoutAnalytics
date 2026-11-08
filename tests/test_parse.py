@@ -20,7 +20,7 @@ from sideout_analytics.pipeline.parse import (
 RAW_FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "raw"
 GAME_FIXTURES = RAW_FIXTURES / "game"
 SCOREBOARD_FIXTURE = RAW_FIXTURES / "scoreboard" / "volleyball-women" / "d1" / "2025" / "12" / "05.json"
-ALL_GAMES = ["6625808", "6628152", "6639889", "6624785", "6482569", "6500656"]
+ALL_GAMES = ["6625808", "6628152", "6639889", "6624785", "6482569", "6500656", "6479084"]
 PLAY_BY_PLAY_GAMES = ["6625808", "6628152", "6639889", "6482569", "6500656"]
 # 6482569 lists set 1's last two rallies out of order (25 before 24), so
 # it's left out of the tests that follow the score rally by rally
@@ -387,6 +387,24 @@ def test_parse_scoreboard_missing_field_raises():
         ),
         ("Service ace (Haley Patterson).", PlayType.SERVICE_ACE, [("Haley Patterson", PlayRole.ACED_RECEIVER)]),
         ("Service ace (Team).", PlayType.SERVICE_ACE, []),
+        ("Service ace (TEAM).", PlayType.SERVICE_ACE, []),
+        # no space before "("
+        (
+            "Attack error by Bella Correia(block by Bergen Reilly; Andi Jackson).",
+            PlayType.ATTACK_ERROR,
+            [
+                ("Bella Correia", PlayRole.ATTACKER),
+                ("Bergen Reilly", PlayRole.BLOCKER),
+                ("Andi Jackson", PlayRole.BLOCKER),
+            ],
+        ),
+        (
+            "Attack error by Taylor Landfair (from Bergen Reilly).",
+            PlayType.ATTACK_ERROR,
+            [("Taylor Landfair", PlayRole.ATTACKER), ("Bergen Reilly", PlayRole.SETTER)],
+        ),
+        # no attacker recorded
+        ("Attack error by (block by Ally Chandler)", PlayType.ATTACK_ERROR, [("Ally Chandler", PlayRole.BLOCKER)]),
         ("Service error.", PlayType.SERVICE_ERROR, []),
         ("Bad set by Kaeley Walz.", PlayType.BAD_SET, [("Kaeley Walz", PlayRole.SETTER)]),
         ("Ball handling error by Lynney Tarnow", PlayType.BALL_HANDLING_ERROR, []),

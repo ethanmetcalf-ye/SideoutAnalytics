@@ -125,9 +125,13 @@ Response:
 - Checked by loading all 7,782 games in the 2025 and 2026 caches (W2-04):
   - **Whole name in `lastName`:** 28 box score rows have `firstName` blank and the full name in `lastName` (`'' 'Caroline Przystup'`), sometimes with a double space.
   - **Semicolon blockers:** 10,630 plays write `(block by A; B)` instead of `(block by A, B)`.
-  - **`Team` as a name:** 15,957 plays are `Service ace (Team).`, when the receiver wasn't recorded.
-  - **Opponent in `(from Y)`:** about 2% of kills name a player on the other team as `Y`, likely an overpass rather than a set.
-  - **Names not in the box score:** some play names have no box score row, mostly misspellings and names with broken encoding (`Ayse GÃŒvener`). With the opponent setters above, 22,289 of 1,988,987 play names (1.1%) match no box score row of the team their role puts them on.
+  - **`Team` as a name:** 15,957 plays are `Service ace (Team).`, when the receiver wasn't recorded, and 458 write `(TEAM)`.
+  - **No space before `(`:** `Attack error by Bella Correia(block by Bergen Reilly; Andi Jackson).`
+  - **`(from Y)` on attack errors:** `Attack error by Taylor Landfair (from Bergen Reilly).` names the setter, like on a kill.
+  - **Attack error with no attacker:** `Attack error by (block by Ally Chandler)` (118 plays).
+  - **Two plays in one text:** 5 texts glue two plays together, like `Attack error by (block by Kate Duffey).Attack error by Lameen Mambu(block by ...)`. Too rare to split: each loads as one attack error with a garbled blocker name (`Kate Duffey).Attack error by Lameen Mambu(block by ...`) that matches nobody.
+  - **Opponent in `(from Y)`:** about 2% of kills (about two a game) name a player on the other team as `Y`, likely the last touch on an overpass rather than a set. Box score `assists` equal a player's same-team `from` count in 439 of 627 checks and include the cross-team ones in only 17.
+  - **Names not in the box score:** some play names have no box score row, mostly misspellings and names with broken encoding (`Ayse GÃŒvener`). After the parser handles the phrasings above and opponent `(from Y)` names are linked as `last_touch`, 3,765 of 1,995,467 play names (0.19%) match no box score row, mostly rallies whose `teamId` disagrees with the score.
 
 ## Rankings
 

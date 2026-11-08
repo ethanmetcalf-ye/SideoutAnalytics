@@ -25,6 +25,14 @@ Decisions:
 - Names in the play text are matched to the box score lines of this match,
   on the team the role puts them on. A name with no line is skipped and
   counted, the play itself is kept.
+- A kill's "(from B)" names the scoring team's setter, except about twice a
+  game B is on the other team: the last touch before the kill, usually an
+  overpass. Box score assists count the same-team ones and not these
+  (issue #75), so B is linked with role last_touch instead of setter.
+  Only when the kill's attacker matched on the scoring team, so attacker
+  and B really are on different teams. In a rally credited to the wrong
+  team both are on the other side, B is a normal setter, and it's left
+  unmatched for reconciliation (W2-06).
 - match.pbp_reconciled and the play-by-play columns of team_set_stats are
   left for reconciliation, the loader writes NULL.
 - Conferences are the scoreboard's seo names (big-ten), the scoreboard's
@@ -535,14 +543,28 @@ def insert_plays(
     rows = set()
     for play in plays:
         scoring_team_id = team_ids[play.scoring_seoname]
+        attacker_on_scoring = any(
+            named.role == PlayRole.ATTACKER and (scoring_team_id, name_key(None, named.name)) in players
+            for named in play.players
+        )
         for named in play.players:
             on_scoring = on_scoring_team(play.play_type, named.role)
             team_id = scoring_team_id if on_scoring else other_team[play.scoring_seoname]
-            player_id = players.get((team_id, name_key(None, named.name)))
+            key = name_key(None, named.name)
+            player_id = players.get((team_id, key))
+            role = named.role
+            if (
+                player_id is None
+                and play.play_type == PlayType.KILL
+                and role == PlayRole.SETTER
+                and attacker_on_scoring
+            ):
+                player_id = players.get((other_team[play.scoring_seoname], key))
+                role = PlayRole.LAST_TOUCH
             if player_id is None:
                 unmatched += 1
                 continue
-            rows.add((play_ids[(play.set_number, play.sequence)], player_id, named.role.value))
+            rows.add((play_ids[(play.set_number, play.sequence)], player_id, role.value))
 
     if rows:
         with cursor.copy("COPY play_player (play_id, player_id, role) FROM STDIN") as copy:
