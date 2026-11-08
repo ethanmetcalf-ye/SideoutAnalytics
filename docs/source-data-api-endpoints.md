@@ -109,6 +109,14 @@ Response:
 - `playText` is free text: `Kill by X (from Y).`, `Attack error by X (block by A, B).`, `Service ace (X).`, `Service error.`, `Bad set by X.`, `Ball handling error by X.`, `<Team> starters: ...` and `<Team> subs: ...`.
 - On `Service ace (X)`, X is the receiver who was aced. The server is not named.
 - Quality varies by match. Some feeds repeat plays without a score, and `homeScore`/`visitorScore` are null on lineup entries.
+- Checked against 64 cached games in November 2026:
+  - **Swapped scores:** in 10 games (all 2026), `homeScore` and `visitorScore` are swapped for the whole match. Every set's last score is the reverse of the linescores, while `isHome` and the point winner's `teamId` are correct.
+  - **Repeated rows:** some feeds list most rallies twice back to back, with the same text, score and clock.
+  - **Scoreless plays:** `Ball handling error  by X` rows (with a double space) have no score, and the score doesn't change.
+  - **Double spaces in names:** the feed writes `Ava  Grevengoed` where the box score has `Ava Grevengoed`.
+  - **Truncated or inconsistent feeds:** a few games have a feed that stops before the set ends, or a handful of rallies whose `teamId` doesn't match the side whose score went up.
+- `/game/{id}` details write `gameState` as one letter: `F`, `P` or `I` (final, pre, live). The scoreboard spells them out.
+- Some box scores leave `firstName` and `lastName` empty for every player, with only the jersey `number` set. This was seen on a match with no play-by-play.
 
 ## Rankings
 
