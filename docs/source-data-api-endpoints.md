@@ -131,7 +131,7 @@ Response:
   - **Attack error with no attacker:** `Attack error by (block by Ally Chandler)` (118 plays).
   - **Two plays in one text:** 5 texts glue two plays together, like `Attack error by (block by Kate Duffey).Attack error by Lameen Mambu(block by ...)`. Too rare to split: each loads as one attack error with a garbled blocker name (`Kate Duffey).Attack error by Lameen Mambu(block by ...`) that matches nobody.
   - **Opponent in `(from Y)`:** about 2% of kills (about two a game) name a player on the other team as `Y`, likely the last touch on an overpass rather than a set. Placed by name rather than by `teamId`: 13,954 kills have `Y` on the other team from the attacker. Box score `assists` equal a player's same-team `from` count in 439 of 627 checks and include the cross-team ones in only 17.
-  - **Names not in the box score:** some play names have no box score row, mostly misspellings and names with broken encoding (`Ayse GÃŒvener`). After the parser handles the phrasings above and a kill's players are placed by name (opponent `(from Y)` as `overpass`), 2,730 of 1,995,467 play names (0.14%) match no box score row: plays other than kills in rallies whose `teamId` disagrees with the score, misspelled names, and kills whose attacker's name is on both teams or neither.
+  - **Names not in the box score:** some play names have no box score row, mostly misspellings and names with broken encoding (`Ayse GÃŒvener`). After the parser handles the phrasings above and a kill's players are placed by name (opponent `(from Y)` as `overpass`), 2,532 of 1,995,467 play names (0.13%) match no box score row: plays other than kills in rallies whose `teamId` disagrees with the score, and misspelled or garbled names.
 
 ## Rankings
 

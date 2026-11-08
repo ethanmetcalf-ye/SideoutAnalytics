@@ -20,7 +20,7 @@ from sideout_analytics.pipeline.parse import (
 RAW_FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "raw"
 GAME_FIXTURES = RAW_FIXTURES / "game"
 SCOREBOARD_FIXTURE = RAW_FIXTURES / "scoreboard" / "volleyball-women" / "d1" / "2025" / "12" / "05.json"
-ALL_GAMES = ["6625808", "6628152", "6639889", "6624785", "6482569", "6500656", "6479084"]
+ALL_GAMES = ["6625808", "6628152", "6639889", "6624785", "6482569", "6500656", "6479084", "6479354"]
 PLAY_BY_PLAY_GAMES = ["6625808", "6628152", "6639889", "6482569", "6500656"]
 # 6482569 lists set 1's last two rallies out of order (25 before 24), so
 # it's left out of the tests that follow the score rally by rally

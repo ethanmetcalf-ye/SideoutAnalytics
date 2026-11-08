@@ -444,12 +444,17 @@ setter, "Attack error by X (block by A, B)" an attacker and blockers,
 the receiver who was aced.
 
 A kill's X and Y are placed by looking their names up in the match's box
-score, not by the rally's `teamId`, which some rallies have wrong. Y on X's
+score first, since the rally's `teamId` is wrong in some rallies. Y on X's
 team is an assist, role `setter`. Y on the other team, about twice a game,
 is the last player to touch the ball before the kill, usually on an
 overpass, role `overpass`: box score assists count a player's same-team
-`(from ...)` kills and not these. A name on both teams or on neither isn't
-linked. Storing the row instead of dropping it follows decision 13.
+`(from ...)` kills and not these. Storing the row instead of dropping it
+follows decision 13.
+
+When the box score can't settle it, `teamId` (right in 99.8% of rallies)
+breaks the tie: a name on both teams is taken as the scoring team's, and
+if X can't be placed, a Y on the scoring team is a `setter`, since both
+signals agree. A name that's left unplaced isn't linked.
 
 `setter` means the player in the `(from ...)` slot on the attacker's team,
 or the player in "Bad set by X", whatever their listed position.

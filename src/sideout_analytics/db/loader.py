@@ -30,8 +30,9 @@ Decisions:
   teamId (wrong in some rallies, fixed by W2-06). B on the attacker's team is
   an assist, role setter. B on the other team is the last touch before the
   kill, usually an overpass, role overpass: box score assists count the
-  same-team ones and not these (issue #75). A name on both teams or on
-  neither is left unmatched rather than guessed. The setter role is the
+  same-team ones and not these (issue #75). When the box score can't
+  settle it, the rally's teamId breaks the tie, see link_kill. Only what
+  neither can decide is left unmatched. The setter role is the
   "(from ...)" slot whatever the player's position.
 - match.pbp_reconciled and the play-by-play columns of team_set_stats are
   left for reconciliation, the loader writes NULL.
@@ -498,35 +499,47 @@ def insert_team_set_stats(
     )
 
 
-def link_kill(play: parse.Play, by_name: dict[str, list[tuple[int, int]]]) -> tuple[list[tuple[int, PlayRole]], int]:
+def link_kill(
+    play: parse.Play, by_name: dict[str, list[tuple[int, int]]], scoring_team_id: int
+) -> tuple[list[tuple[int, PlayRole]], int]:
     """
     the (player_id, role) rows for a kill's attacker and "(from ...)"
-    player, and how many of its names weren't linked. Each name is placed on
-    whichever team in the match has it. The "(from ...)" player is a setter
-    on the attacker's team and an overpass on the other, and is left out
-    when either of them can't be placed on exactly one team.
-    """
-    placed = {}
-    for named in play.players:
-        found = by_name.get(name_key(None, named.name), [])
-        placed[named.role] = found[0] if len(found) == 1 else None
+    player, and how many of its names weren't linked.
 
+    The box score decides when it can: each name goes on the one team that
+    has it, and the "(from ...)" player is a setter on the attacker's team
+    and an overpass on the other. The rally's teamId, right in 99.8% of
+    rallies, breaks ties the box score can't: a name on both teams is the
+    scoring team's, and when the attacker can't be placed, a "(from ...)"
+    player on the scoring team is a setter since both signals agree.
+    Anything else is left unmatched.
+    """
+
+    def place(name: str) -> tuple[int, int] | None:
+        found = by_name.get(name_key(None, name), [])
+        if len(found) == 1:
+            return found[0]
+        # on both teams the scoring team's, on neither nothing
+        return next((team_and_player for team_and_player in found if team_and_player[0] == scoring_team_id), None)
+
+    attacker = next((place(named.name) for named in play.players if named.role == PlayRole.ATTACKER), None)
     linked = []
     missed = 0
-    attacker = placed.get(PlayRole.ATTACKER)
     for named in play.players:
-        place = placed[named.role]
-        if named.role == PlayRole.SETTER:
-            # same team or not can't be told without both
-            if place is None or attacker is None:
+        placed = attacker if named.role == PlayRole.ATTACKER else place(named.name)
+        if placed is None:
+            missed += 1
+            continue
+        team_id, player_id = placed
+        role = named.role
+        if role == PlayRole.SETTER:
+            if attacker is not None:
+                role = PlayRole.SETTER if team_id == attacker[0] else PlayRole.OVERPASS
+            elif team_id != scoring_team_id:
+                # no attacker to compare with and teamId says other team
                 missed += 1
                 continue
-            team_id, player_id = place
-            linked.append((player_id, PlayRole.SETTER if team_id == attacker[0] else PlayRole.OVERPASS))
-        elif place is None:
-            missed += 1
-        else:
-            linked.append((place[1], named.role))
+        linked.append((player_id, role))
     return linked, missed
 
 
@@ -582,7 +595,7 @@ def insert_plays(
     for play in plays:
         play_id = play_ids[(play.set_number, play.sequence)]
         if play.play_type == PlayType.KILL:
-            linked, missed = link_kill(play, by_name)
+            linked, missed = link_kill(play, by_name, team_ids[play.scoring_seoname])
             rows |= {(play_id, player_id, role.value) for player_id, role in linked}
             unmatched += missed
             continue
