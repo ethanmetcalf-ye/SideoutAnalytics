@@ -135,6 +135,17 @@ at each layer:
 - **Why:** season leaderboards, the most common player query, only use the
   roster layer. A wrong cross-team merge would silently corrupt a player's
   page, while a missed one only splits a career.
+- **Load order doesn't matter:** a name is matched against the team's
+  previous and next seasons, so loading 2026 before 2025 (a backfill) links
+  the same players as loading in date order. If the previous and next
+  seasons already have the name under two different players, which happens
+  when the season between them loads last, they're one player split by load
+  order: the next season's rows move to the previous season's player and the
+  other player is deleted. Their seasons don't overlap, so nothing collides.
+- **Box score rows with no name** are matched by jersey number to the
+  team's roster for that season (decision 13: keep what the source gives).
+  A number no roster player, or more than one, has is skipped, and the
+  match is loaded again once more of the season is in.
 - **Play-by-play names** ("Kill by First Last") match the box score exactly
   within a match, so `play_player` references real `player_id`s.
 
@@ -198,6 +209,10 @@ instead of failing the match or being guessed:
     a `COALESCE`.
   - **Why keep the match:** skipping it would drop a win from the D1 team's
     record and skew the ratings. The 2025 season has 16 of these matches.
+  - **No conference:** the scoreboard lists these teams with a blank
+    conference, so their `team_season.conference_id` is NULL. Unlike
+    division, an `other` conference row would show up in every conference
+    list and standings page, and there's nothing to group by.
 - **Set attempts not recorded:** some box scores leave `setAttempts` blank
   for every player in the match, while the other counts are filled in.
   `box_score_line.set_attempts` is NULL for those rows.
@@ -263,7 +278,7 @@ One row per team per season.
 | season | int | **PK**, FK → `season` |
 | source_team_id | text | API `teamId` for that season |
 | division | text | `d1`, `d2`, `d3`, or `other` for non-NCAA opponents (decision 13) |
-| conference_id | bigint | FK → `conference` |
+| conference_id | bigint | Nullable. FK → `conference`. NULL for non-NCAA opponents (decision 13) |
 | head_coach | text | Nullable. Not in the API; entered manually |
 | assistant_coaches | text[] | Nullable. Not in the API; entered manually |
 
