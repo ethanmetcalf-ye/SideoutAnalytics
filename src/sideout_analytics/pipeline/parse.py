@@ -20,6 +20,12 @@ Decisions (W2-03):
   swapped back, otherwise they're kept and reconciliation catches it.
 - Box score rows with blank names are kept with the names as None, the
   loader decides what to do with a player it can't match.
+- A blank setAttempts is None, not 0. The source leaves it blank for a whole
+  match when set attempts weren't recorded, and a 0 would drag down every
+  setter's average. It's the only count allowed to be blank, any other
+  blank count still fails the file.
+- A team with no divisionName is a non-NCAA opponent and gets
+  Division.OTHER (docs/schema.md decision 13).
 """
 
 import datetime as dt
@@ -31,14 +37,18 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, PositiveInt
 
-from ..pipeline.cache import RawStore
-from .tables import Division, MatchState, PlayRole, PlayType
+from ..db.tables import Division, MatchState, PlayRole, PlayType
+from .cache import RawStore
 
 # details use one letter codes, the scoreboard spells them out. same
 # mapping as the API's own normalizeGameState, minus its default to pre
 DETAILS_STATES = {"F": MatchState.FINAL, "P": MatchState.PRE, "I": MatchState.LIVE}
 
 SetNumber = Annotated[int, Field(ge=1, le=5)]
+
+# linescore period labels. 2025 matches use both "1" and "1st", anything
+# else fails so a new format gets noticed
+SET_LABELS = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "1st": 1, "2nd": 2, "3rd": 3, "4th": 4, "5th": 5}
 
 # play text patterns, matched against the text with whitespace collapsed.
 # names are lazy so the optional (from ...) or (block by ...) and the final
@@ -122,7 +132,8 @@ class Match(Record):
 class BoxScoreLine(Record):
     """
     one player's row in a box score, box_score_line. Names are None when the
-    source leaves them blank. number is text because roster.number is.
+    source leaves them blank, and set_attempts is None when the match has
+    no set attempts recorded. number is text because roster.number is.
     points, hittingPercentage and totalBlocks aren't kept since they're
     calculated from these counts.
     """
@@ -138,7 +149,7 @@ class BoxScoreLine(Record):
     attack_errors: NonNegativeInt
     attack_attempts: NonNegativeInt
     assists: NonNegativeInt
-    set_attempts: NonNegativeInt
+    set_attempts: NonNegativeInt | None
     set_errors: NonNegativeInt
     aces: NonNegativeInt
     serve_errors: NonNegativeInt
@@ -217,13 +228,25 @@ def collapse_whitespace(text: str) -> str:
     return " ".join(text.split())
 
 
+def set_number_for(label: str) -> int:
+    """
+    the set number for a linescore period label, "2" or "2nd" -> 2. Raises
+    ValueError on a label that isn't one of SET_LABELS.
+    """
+    if label not in SET_LABELS:
+        raise ValueError(f"unknown set label {label!r}")
+    return SET_LABELS[label]
+
+
 def parse_game_details(content: bytes) -> Match:
     """
     parses a /game/{id} file. Raises ParseError on a missing field, a bad
     value, or a gameState that isn't F, P or I.
     """
+    game_id = "unknown"
     try:
         contest = json.loads(content)["contests"][0]
+        game_id = contest.get("id", game_id)
         game_state = contest["gameState"]
         if game_state not in DETAILS_STATES:
             raise ValueError(f"unknown gameState {game_state!r}")
@@ -235,7 +258,9 @@ def parse_game_details(content: bytes) -> Match:
                 source_team_id=team["teamId"],
                 seoname=team["seoname"],
                 team_name=team["nameShort"],
-                division=team["divisionName"],
+                # null for non-NCAA opponents, a value that isn't d1-d3
+                # still fails
+                division=team["divisionName"] or Division.OTHER,
                 is_home=team["isHome"],
                 # only settled once the match is over, before that the API
                 # says false for both
@@ -250,7 +275,7 @@ def parse_game_details(content: bytes) -> Match:
         teams.sort(key=lambda team: not team.is_home)
 
         set_scores = [
-            SetScore(set_number=line["period"], home_points=line["home"], away_points=line["visit"])
+            SetScore(set_number=set_number_for(line["period"]), home_points=line["home"], away_points=line["visit"])
             for line in contest["linescores"] or []
         ]
 
@@ -267,8 +292,8 @@ def parse_game_details(content: bytes) -> Match:
             teams=teams,
             set_scores=set_scores,
         )
-    except (KeyError, IndexError, TypeError, ValueError) as e:
-        raise ParseError(f"Can't parse game details: {e}") from e
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError) as e:
+        raise ParseError(f"Can't parse game details for game {game_id}: {e}") from e
 
 
 def parse_boxscore(content: bytes) -> BoxScore:
@@ -276,8 +301,10 @@ def parse_boxscore(content: bytes) -> BoxScore:
     parses a /game/{id}/boxscore file. Raises ParseError on a missing field
     or a count that isn't a non negative number.
     """
+    game_id = "unknown"
     try:
         data = json.loads(content)
+        game_id = data.get("contestId", game_id)
         seonames = {str(team["teamId"]): team["seoname"] for team in data["teams"]}
 
         lines = []
@@ -299,7 +326,7 @@ def parse_boxscore(content: bytes) -> BoxScore:
                         attack_errors=player["attackErrors"],
                         attack_attempts=player["attackAttempts"],
                         assists=player["assists"],
-                        set_attempts=player["setAttempts"],
+                        set_attempts=blank_to_none(player["setAttempts"]),
                         set_errors=player["setErrors"],
                         aces=player["serviceAces"],
                         serve_errors=player["serviceErrors"],
@@ -325,8 +352,28 @@ def parse_boxscore(content: bytes) -> BoxScore:
             ]
 
         return BoxScore(lines=lines, set_attacks=set_attacks)
-    except (KeyError, IndexError, TypeError, ValueError) as e:
-        raise ParseError(f"Can't parse box score: {e}") from e
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError) as e:
+        raise ParseError(f"Can't parse box score for game {game_id}: {e}") from e
+
+
+def parse_scoreboard_rounds(content: bytes) -> dict[str, str | None]:
+    """
+    each game's NCAA tournament round from a scoreboard file, keyed by
+    gameID, for match.bracket_round since the details don't have it. The
+    scoreboard writes rounds as numbers (1 is the first round) and "" for a
+    game outside the tournament, which is None here. Raises ParseError on a
+    missing field.
+    """
+    try:
+        rounds = {}
+        for entry in json.loads(content)["games"]:
+            game = entry["game"]
+            bracket_round = blank_to_none(game["bracketRound"])
+            # text in the schema, so round 1 is "1"
+            rounds[game["gameID"]] = None if bracket_round is None else str(bracket_round)
+        return rounds
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError) as e:
+        raise ParseError(f"Can't parse scoreboard: {e}") from e
 
 
 def classify_play(text: str) -> tuple[PlayType, list[PlayPlayer]]:
@@ -433,13 +480,13 @@ def parse_play_by_play(content: bytes, match: Match) -> tuple[Play, ...]:
             last_winner = seoname
 
         return tuple(plays)
-    except (KeyError, IndexError, TypeError, ValueError) as e:
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError) as e:
         raise ParseError(f"Can't parse play-by-play for game {match.source_game_id}: {e}") from e
 
 
 if __name__ == "__main__":
     # debug helper until the W2-07 CLI: parses one cached game's details,
-    # python -i -m sideout_analytics.db.parser 6625808 keeps match in a REPL
+    # python -i -m sideout_analytics.pipeline.parse 6625808 keeps match in a REPL
     raw_store = RawStore.from_settings()
     match = parse_game_details(raw_store.map_endpoint_cache_file(f"/game/{sys.argv[1]}").read_bytes())
     pprint.pprint(match.model_dump())

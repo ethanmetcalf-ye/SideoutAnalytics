@@ -4,7 +4,8 @@ import pathlib
 
 import pytest
 
-from sideout_analytics.db.parser import (
+from sideout_analytics.db.tables import Division, MatchState, PlayRole, PlayType
+from sideout_analytics.pipeline.parse import (
     ParseError,
     PlayPlayer,
     SetScore,
@@ -12,12 +13,17 @@ from sideout_analytics.db.parser import (
     parse_boxscore,
     parse_game_details,
     parse_play_by_play,
+    parse_scoreboard_rounds,
     scores_are_swapped,
 )
-from sideout_analytics.db.tables import MatchState, PlayRole, PlayType
 
-GAME_FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "raw" / "game"
-PLAY_BY_PLAY_GAMES = ["6625808", "6628152", "6639889"]
+RAW_FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "raw"
+GAME_FIXTURES = RAW_FIXTURES / "game"
+ALL_GAMES = ["6625808", "6628152", "6639889", "6624785", "6482569", "6500656"]
+PLAY_BY_PLAY_GAMES = ["6625808", "6628152", "6639889", "6482569", "6500656"]
+# 6482569 lists set 1's last two rallies out of order (25 before 24), so
+# it's left out of the tests that follow the score rally by rally
+SCORE_ORDERED_GAMES = ["6625808", "6628152", "6639889", "6500656"]
 
 
 def details_fixture(game_id: str) -> bytes:
@@ -55,7 +61,7 @@ def set_scores(*scores: tuple[int, int]) -> tuple[SetScore, ...]:
 # game details
 
 
-@pytest.mark.parametrize("game_id", ["6625808", "6628152", "6639889", "6624785"])
+@pytest.mark.parametrize("game_id", ALL_GAMES)
 def test_parse_game_details_reads_every_fixture(game_id):
     match = parse_game_details(details_fixture(game_id))
 
@@ -144,10 +150,50 @@ def test_parse_game_details_not_final_has_no_winner():
     assert [team.is_winner for team in match.teams] == [None, None]
 
 
-@pytest.mark.parametrize("content", [b"not json", b"{}", b'{"contests": []}'])
+@pytest.mark.parametrize("content", [b"not json", b"{}", b'{"contests": []}', b"[]"])
 def test_parse_game_details_malformed_raises(content):
     with pytest.raises(ParseError):
         parse_game_details(content)
+
+
+def test_parse_game_details_ordinal_set_labels():
+    # 2025 linescores sometimes say "1st", "2nd", ... instead of "1", "2"
+    match = parse_game_details(details_fixture("6482569"))
+
+    assert match.set_scores == set_scores((19, 25), (23, 25), (13, 25))
+
+
+def test_parse_game_details_unknown_set_label_raises():
+    details = json.loads(details_fixture("6625808"))
+    details["contests"][0]["linescores"][0]["period"] = "OT"
+
+    with pytest.raises(ParseError, match="unknown set label 'OT'"):
+        parse_game_details(json.dumps(details).encode())
+
+
+def test_parse_game_details_non_ncaa_team_is_other():
+    # Tougaloo is NAIA, its divisionName is null
+    match = parse_game_details(details_fixture("6482569"))
+    home, away = match.teams
+
+    assert (home.seoname, home.division) == ("tougaloo", Division.OTHER)
+    assert (away.seoname, away.division) == ("mississippi-val", Division.D1)
+
+
+def test_parse_game_details_unknown_division_raises():
+    details = json.loads(details_fixture("6625808"))
+    details["contests"][0]["teams"][0]["divisionName"] = "d4"
+
+    with pytest.raises(ParseError):
+        parse_game_details(json.dumps(details).encode())
+
+
+def test_parse_game_details_error_names_the_game():
+    details = json.loads(details_fixture("6625808"))
+    details["contests"][0]["seasonYear"] = "abc"
+
+    with pytest.raises(ParseError, match="game 6625808"):
+        parse_game_details(json.dumps(details).encode())
 
 
 # box score
@@ -212,12 +258,31 @@ def test_parse_boxscore_blank_names_are_none():
     assert box_score.lines[0].kills == 7
 
 
-@pytest.mark.parametrize("bad_value", ["abc", "-1", None])
+# "" is only allowed for setAttempts, any other blank count fails
+@pytest.mark.parametrize("bad_value", ["abc", "-1", None, ""])
 def test_parse_boxscore_bad_count_raises(bad_value):
     box_score = json.loads(game_file_fixture("6625808", "boxscore.json"))
     box_score["teamBoxscore"][0]["playerStats"][0]["kills"] = bad_value
 
     with pytest.raises(ParseError):
+        parse_boxscore(json.dumps(box_score).encode())
+
+
+def test_parse_boxscore_blank_set_attempts_are_none():
+    # setAttempts is "" for every player in this match, the other counts
+    # are filled in
+    box_score = parse_boxscore(game_file_fixture("6500656", "boxscore.json"))
+
+    assert len(box_score.lines) == 33
+    assert all(line.set_attempts is None for line in box_score.lines)
+    assert all(line.assists is not None for line in box_score.lines)
+
+
+def test_parse_boxscore_error_names_the_game():
+    box_score = json.loads(game_file_fixture("6625808", "boxscore.json"))
+    box_score["teamBoxscore"][0]["playerStats"][0]["kills"] = "abc"
+
+    with pytest.raises(ParseError, match="game 6625808"):
         parse_boxscore(json.dumps(box_score).encode())
 
 
@@ -227,6 +292,32 @@ def test_parse_boxscore_missing_field_raises():
 
     with pytest.raises(ParseError, match="digs"):
         parse_boxscore(json.dumps(box_score).encode())
+
+
+# scoreboard
+
+
+def test_parse_scoreboard_rounds_reads_tournament_rounds():
+    # the first two rounds of the 2025 NCAA tournament were on 2025-12-05
+    content = (RAW_FIXTURES / "scoreboard" / "volleyball-women" / "d1" / "2025" / "12" / "05.json").read_bytes()
+
+    rounds = parse_scoreboard_rounds(content)
+
+    assert rounds["6500656"] == "1"
+    assert sorted(set(rounds.values())) == ["1", "2"]
+
+
+def test_parse_scoreboard_rounds_outside_tournament_is_none():
+    content = json.dumps({"games": [{"game": {"gameID": "1", "bracketRound": ""}}]}).encode()
+
+    assert parse_scoreboard_rounds(content) == {"1": None}
+
+
+def test_parse_scoreboard_rounds_missing_field_raises():
+    content = json.dumps({"games": [{"game": {"gameID": "1"}}]}).encode()
+
+    with pytest.raises(ParseError, match="bracketRound"):
+        parse_scoreboard_rounds(content)
 
 
 # play text
@@ -309,7 +400,7 @@ def test_parse_play_by_play_one_play_per_point(game_id):
     assert len(plays) == sum(score.home_points + score.away_points for score in match.set_scores)
 
 
-@pytest.mark.parametrize("game_id", PLAY_BY_PLAY_GAMES)
+@pytest.mark.parametrize("game_id", SCORE_ORDERED_GAMES)
 def test_parse_play_by_play_last_rally_matches_linescores(game_id):
     # 6628152 and 6639889 have home and away swapped in the raw feed
     match, plays = parsed_plays(game_id)
@@ -318,7 +409,7 @@ def test_parse_play_by_play_last_rally_matches_linescores(game_id):
     assert last_scores == {score.set_number: (score.home_points, score.away_points) for score in match.set_scores}
 
 
-@pytest.mark.parametrize("game_id", PLAY_BY_PLAY_GAMES)
+@pytest.mark.parametrize("game_id", SCORE_ORDERED_GAMES)
 def test_parse_play_by_play_scoring_team_gains_the_point(game_id):
     match, plays = parsed_plays(game_id)
     home = match.teams[0].seoname
