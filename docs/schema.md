@@ -436,18 +436,23 @@ One row per player named in a play.
 | --- | --- | --- |
 | play_id | bigint | **PK**, FK → `play` |
 | player_id | bigint | **PK**, FK → `player` |
-| role | text | **PK**. `attacker`, `setter`, `blocker`, `aced_receiver`, or `last_touch` |
+| role | text | **PK**. `attacker`, `setter`, `blocker`, `aced_receiver`, or `overpass` |
 
 Roles come from the play text: "Kill by X (from Y)" gives an attacker and a
 setter, "Attack error by X (block by A, B)" an attacker and blockers,
 "Attack error by X (from Y)" an attacker and a setter, and "Service ace (X)"
 the receiver who was aced.
 
-When a kill's Y is on the other team, about twice a game, Y isn't a setter
-but the last player to touch the ball before the kill, usually on an
-overpass, and gets the role `last_touch`. Box score assists count a player's
-same-team `(from ...)` kills and not these. Storing the row instead of
-dropping it follows decision 13.
+A kill's X and Y are placed by looking their names up in the match's box
+score, not by the rally's `teamId`, which some rallies have wrong. Y on X's
+team is an assist, role `setter`. Y on the other team, about twice a game,
+is the last player to touch the ball before the kill, usually on an
+overpass, role `overpass`: box score assists count a player's same-team
+`(from ...)` kills and not these. A name on both teams or on neither isn't
+linked. Storing the row instead of dropping it follows decision 13.
+
+`setter` means the player in the `(from ...)` slot on the attacker's team,
+or the player in "Bad set by X", whatever their listed position.
 
 ### team_rank
 
@@ -519,7 +524,7 @@ W1-05 implements these as `CHECK` constraints.
 | `box_score_line` | `sets_played BETWEEN 0 AND 5`; every count column `>= 0` |
 | `team_set_stats` | `set_number BETWEEN 1 AND 5`; every count column `>= 0` |
 | `play` | `set_number BETWEEN 1 AND 5`, `sequence >= 1`, `home_score >= 0`, `away_score >= 0`, `play_type IN ('kill', 'attack_error', 'service_ace', 'service_error', 'bad_set', 'ball_handling_error', 'other')` |
-| `play_player` | `role IN ('attacker', 'setter', 'blocker', 'aced_receiver', 'last_touch')` |
+| `play_player` | `role IN ('attacker', 'setter', 'blocker', 'aced_receiver', 'overpass')` |
 | `team_rank` | `ranking >= 1`, `total_points >= 0`, `first_place_votes >= 0` |
 | `ingest_run` | `status IN ('running', 'succeeded', 'failed')`, `finished_at >= started_at` |
 | `prediction` | `home_win_probability BETWEEN 0 AND 1` |

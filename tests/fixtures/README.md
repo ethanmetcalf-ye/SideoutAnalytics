@@ -16,7 +16,7 @@ the parsers have to handle the real whitespace and key order, and the
 | `6624785` | Louisiana vs Louisiana Tech, 3 sets | No play-by-play: details say `hasPbp: false` and the endpoint returns 502, so there is no `play-by-play.json`. Every box score row has blank first and last names, only jersey numbers. |
 | `6482569` | Tougaloo vs Mississippi Val., 3 sets (2025) | 2025 linescores labelled `1st`, `2nd`, `3rd`. Tougaloo is NAIA, so its `divisionName` is null. Set 1's last two rallies are listed out of order (`19-25` before `19-24`), so it's left out of the tests that follow the score rally by rally. |
 | `6500656` | Nebraska vs LIU, 3 sets (2025 NCAA tournament, first round) | `setAttempts` is `""` for every player while the other counts are filled in. |
-| `6479084` | Ole Miss vs Louisiana, 2025 | A rally credited to the wrong team: set 2 rally 19, `Kill by Grace Sweeney (from Ryleigh Garis).`, is credited to Ole Miss though both players are on Louisiana. Covers `last_touch` not firing on a mislabelled rally (issue #75). |
+| `6479084` | Ole Miss vs Louisiana, 2025 | A rally credited to the wrong team: set 2 rally 19, `Kill by Grace Sweeney (from Ryleigh Garis).`, is credited to Ole Miss though both players are on Louisiana. Covers placing a kill's players by name, not by the rally's team (issue #77). |
 
 Every game has `/game/{id}` details (`game/{id}.json`) and a box score.
 All seven are final, and their details say `gameState: "F"`, not `final`
