@@ -135,6 +135,17 @@ at each layer:
 - **Why:** season leaderboards, the most common player query, only use the
   roster layer. A wrong cross-team merge would silently corrupt a player's
   page, while a missed one only splits a career.
+- **Load order doesn't matter:** a name is matched against the team's
+  previous and next seasons, so loading 2026 before 2025 (a backfill) links
+  the same players as loading in date order. If the previous and next
+  seasons already have the name under two different players, which happens
+  when the season between them loads last, they're one player split by load
+  order: the next season's rows move to the previous season's player and the
+  other player is deleted. Their seasons don't overlap, so nothing collides.
+- **Box score rows with no name** are matched by jersey number to the
+  team's roster for that season (decision 13: keep what the source gives).
+  A number no roster player, or more than one, has is skipped, and the
+  match is loaded again once more of the season is in.
 - **Play-by-play names** ("Kill by First Last") match the box score exactly
   within a match, so `play_player` references real `player_id`s.
 

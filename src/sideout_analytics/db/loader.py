@@ -12,9 +12,16 @@ Decisions:
   play_player) are deleted and inserted again. A rally or player dropped
   from a corrected feed can't linger, and plays have no source key to
   upsert on. Plays and their players go in with COPY.
-- Players are matched by team, season and name_key, then by the same team's
-  previous season, and are new players otherwise (decision 7). A box score
-  line with no name at all can't be matched and is skipped.
+- Players are matched by team and name_key in the same, previous or next
+  season, and are new players otherwise (decision 7), so the result doesn't
+  depend on the order seasons are loaded in. If the previous and next
+  seasons have the name under two players, they're the same player split by
+  load order and are merged.
+- A box score line with no name is matched by jersey number to the team's
+  roster for the season. It's skipped when no roster player, or more than
+  one, has the number. That depends on the named matches being loaded
+  first, so a game with skipped_lines should be loaded again at the end of
+  the run.
 - Names in the play text are matched to the box score lines of this match,
   on the team the role puts them on. A name with no line is skipped and
   counted, the play itself is kept.
@@ -22,6 +29,12 @@ Decisions:
   left for reconciliation, the loader writes NULL.
 - Conferences are the scoreboard's seo names (big-ten), the scoreboard's
   conferenceName is blank.
+- Games that share a team must not load at the same time: both could create
+  the same new player, and one would then fail on roster's (team_id, season,
+  name_key) key. Load serially.
+- Column lists in the SQL are written by hand rather than read from
+  tables.py, since COPY needs them spelled out. The tests build their schema
+  from tables.py, so a column that drifts fails there.
 """
 
 import datetime as dt
@@ -60,8 +73,9 @@ class ParsedGame:
 class LoadResult:
     """
     what load_game did with one game, for the run log. skipped_lines are
-    box score lines with no name, unmatched_names are names in the play text
-    with no box score line.
+    box score lines with no name and no jersey number match, worth a reload
+    once more of the season is in. unmatched_names are names in the play
+    text with no box score line.
     """
 
     match_id: int
@@ -103,12 +117,15 @@ def on_scoring_team(play_type: PlayType, role: PlayRole) -> bool:
 def load_game(connection: psycopg.Connection, game: ParsedGame, ingest_run_id: int) -> LoadResult:
     """
     loads one game in one transaction. Raises LoadError when the records
-    don't fit the schema: a team missing from the scoreboard, a box score
-    that doesn't cover the linescores, two teammates with the same name, or
-    a row the database rejects.
+    don't fit the schema: a box score or play for a team that isn't in the
+    details, a team missing from the scoreboard, a box score that doesn't
+    cover the linescores, two teammates with the same name, or a row the
+    database rejects. Not safe to run for two games with a team in common at
+    the same time, see the module docstring.
     """
     match = game.match
     try:
+        check_teams(game)
         with connection.transaction(), connection.cursor() as cursor:
             upsert_season(cursor, match)
             team_ids = {team.seoname: upsert_team(cursor, team, match.season, game.scoreboard) for team in match.teams}
@@ -132,6 +149,24 @@ def load_game(connection: psycopg.Connection, game: ParsedGame, ingest_run_id: i
         raise LoadError(f"Can't load game {match.source_game_id}: {e}") from e
     except LoadError as e:
         raise LoadError(f"Can't load game {match.source_game_id}: {e}") from e
+
+
+def check_teams(game: ParsedGame) -> None:
+    """
+    raises LoadError if the box score or play-by-play names a team that
+    isn't one of the match's two, so bad data fails the game instead of
+    escaping as a KeyError.
+    """
+    seonames = {team.seoname for team in game.match.teams}
+    named = set()
+    if game.box_score is not None:
+        named |= {line.seoname for line in game.box_score.lines}
+        named |= {attack.seoname for attack in game.box_score.set_attacks}
+    for play in game.plays:
+        named |= {play.scoring_seoname, play.serving_seoname} - {None}
+    unknown = named - seonames
+    if unknown:
+        raise LoadError(f"teams {sorted(unknown)} aren't in the details")
 
 
 def upsert_season(cursor: psycopg.Cursor, match: parse.Match) -> None:
@@ -282,28 +317,45 @@ def insert_match_teams(cursor: psycopg.Cursor, match_id: int, match: parse.Match
     )
 
 
+def merge_player(cursor: psycopg.Cursor, keep: int, drop: int) -> None:
+    """
+    moves every row of player drop onto player keep and deletes drop. Used
+    when two seasons of one player were loaded before the season between
+    them, their seasons don't overlap so no key collides.
+    """
+    for table in ("roster", "box_score_line", "play_player"):
+        cursor.execute(f"UPDATE {table} SET player_id = %s WHERE player_id = %s", (keep, drop))  # noqa: S608
+    cursor.execute("DELETE FROM player WHERE player_id = %s", (drop,))
+
+
 def resolve_players(
     cursor: psycopg.Cursor, season: int, lines: list[tuple[int, str, parse.BoxScoreLine]]
 ) -> dict[tuple[int, str], int]:
     """
-    the player_id for each (team_id, name_key) in a box score: this season's
-    roster first, then the same team's previous season, then a new player.
+    the player_id for each (team_id, name_key) in a box score, from the
+    team's roster in the previous, same or next season, else a new player.
     Upserts each player's roster row with the latest number and position.
     """
     team_ids = list({team_id for team_id, _, _ in lines})
     cursor.execute(
         """
         SELECT team_id, season, name_key, player_id FROM roster
-        WHERE team_id = ANY(%s) AND season IN (%s, %s)
+        WHERE team_id = ANY(%s) AND season BETWEEN %s AND %s
         """,
-        (team_ids, season, season - 1),
+        (team_ids, season - 1, season + 1),
     )
     known = {(team_id, row_season, key): player_id for team_id, row_season, key, player_id in cursor.fetchall()}
 
     players = {}
     for team_id, key, line in lines:
-        player_id = known.get((team_id, season, key)) or known.get((team_id, season - 1, key))
-        if player_id is None:
+        # previous season first, so a merge keeps the oldest player
+        found = [known.get((team_id, nearby, key)) for nearby in (season - 1, season, season + 1)]
+        candidates = list(dict.fromkeys(player_id for player_id in found if player_id is not None))
+        if candidates:
+            player_id = candidates[0]
+            for other in candidates[1:]:
+                merge_player(cursor, player_id, other)
+        else:
             cursor.execute(
                 "INSERT INTO player (first_name, last_name, name_key) VALUES (%s, %s, %s) RETURNING player_id",
                 (line.first_name or "", line.last_name or "", key),
@@ -325,30 +377,62 @@ def resolve_players(
     return players
 
 
+def match_by_number(
+    cursor: psycopg.Cursor, season: int, lines: list[tuple[int, parse.BoxScoreLine]]
+) -> dict[tuple[int, str], tuple[int, str]]:
+    """
+    the (player_id, name_key) for each nameless line's (team_id, number),
+    from the team's roster this season. Numbers that no roster player or
+    more than one has are left out.
+    """
+    cursor.execute(
+        """
+        SELECT team_id, number, min(player_id), min(name_key) FROM roster
+        WHERE team_id = ANY(%s) AND season = %s AND number IS NOT NULL
+        GROUP BY team_id, number
+        HAVING count(*) = 1
+        """,
+        (list({team_id for team_id, _ in lines}), season),
+    )
+    return {(team_id, number): (player_id, key) for team_id, number, player_id, key in cursor.fetchall()}
+
+
 def insert_box_score(
     cursor: psycopg.Cursor, match_id: int, season: int, box_score: parse.BoxScore, team_ids: dict[str, int]
 ) -> tuple[dict[tuple[int, str], int], int]:
     """
     inserts box_score_line rows and returns the player_ids by (team_id,
-    name_key) for the plays, and the number of lines skipped for having no
-    name. Raises LoadError when two teammates have the same name_key, since
-    they'd be one player.
+    name_key) for the plays, and the number of nameless lines skipped
+    because their number didn't match one roster player. Raises LoadError
+    when two teammates have the same name_key, since they'd be one player.
     """
-    lines = []
-    skipped = 0
+    named = []
+    nameless = []
     for line in box_score.lines:
+        team_id = team_ids[line.seoname]
         if line.first_name is None and line.last_name is None:
+            nameless.append((team_id, line))
+            continue
+        key = name_key(line.first_name, line.last_name)
+        if any(seen_team == team_id and seen_key == key for seen_team, seen_key, _ in named):
+            raise LoadError(f"two players on {line.seoname} are both {key!r}")
+        named.append((team_id, key, line))
+
+    players = resolve_players(cursor, season, named) if named else {}
+    rows = [(players[(team_id, key)], team_id, line) for team_id, key, line in named]
+
+    skipped = 0
+    by_number = match_by_number(cursor, season, nameless) if nameless else {}
+    for team_id, line in nameless:
+        matched = by_number.get((team_id, line.number))
+        # a number already on a named line in this match would be the same
+        # player twice
+        if matched is None or matched[0] in players.values():
             skipped += 1
             continue
-        team_id = team_ids[line.seoname]
-        key = name_key(line.first_name, line.last_name)
-        if any(seen_team == team_id and seen_key == key for seen_team, seen_key, _ in lines):
-            raise LoadError(f"two players on {line.seoname} are both {key!r}")
-        lines.append((team_id, key, line))
-
-    if not lines:
-        return {}, skipped
-    players = resolve_players(cursor, season, lines)
+        player_id, key = matched
+        players[(team_id, key)] = player_id
+        rows.append((player_id, team_id, line))
 
     columns = ["match_id", "player_id", "team_id", "position", "started", "sets_played", *BOX_SCORE_COUNTS]
     cursor.executemany(
@@ -356,14 +440,14 @@ def insert_box_score(
         [
             (
                 match_id,
-                players[(team_id, key)],
+                player_id,
                 team_id,
                 line.position,
                 line.started,
                 line.sets_played,
                 *(getattr(line, count) for count in BOX_SCORE_COUNTS),
             )
-            for team_id, key, line in lines
+            for player_id, team_id, line in rows
         ],
     )
     return players, skipped

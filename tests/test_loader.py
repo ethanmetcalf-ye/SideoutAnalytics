@@ -308,3 +308,109 @@ def test_load_game_box_score_missing_a_set_raises(database, ingest_run_id):
         load_game(database, ParsedGame(game.match, game.scoreboard, box_score, game.plays), ingest_run_id)
 
     assert table_counts(database)["match"] == 0
+
+
+def season_copy(game: ParsedGame, source_game_id: str, season: int) -> ParsedGame:
+    """
+    the same game under another gameID and season, for loading one team's
+    players across seasons.
+    """
+    match = game.match.model_copy(update={"source_game_id": source_game_id, "season": season})
+    return ParsedGame(match, game.scoreboard, game.box_score, game.plays)
+
+
+def test_load_game_newest_season_first_links_players(database, ingest_run_id):
+    game = fixture_game("6625808")
+    load_game(database, season_copy(game, "next", game.match.season + 1), ingest_run_id)
+
+    load_game(database, game, ingest_run_id)
+
+    counts = table_counts(database)
+    assert counts["player"] == len(game.box_score.lines)
+    assert counts["roster"] == 2 * len(game.box_score.lines)
+
+
+def test_load_game_middle_season_last_merges_players(database, ingest_run_id):
+    game = fixture_game("6625808")
+    season = game.match.season
+    load_game(database, season_copy(game, "previous", season - 1), ingest_run_id)
+    load_game(database, season_copy(game, "next", season + 1), ingest_run_id)
+    assert table_counts(database)["player"] == 2 * len(game.box_score.lines)
+
+    load_game(database, game, ingest_run_id)
+
+    counts = table_counts(database)
+    assert counts["player"] == len(game.box_score.lines)
+    assert counts["roster"] == 3 * len(game.box_score.lines)
+    assert counts["box_score_line"] == 3 * len(game.box_score.lines)
+    # every season's rows moved onto the surviving players
+    seasons_per_player = database.execute("SELECT count(*) FROM roster GROUP BY player_id").fetchall()
+    assert {count for (count,) in seasons_per_player} == {3}
+
+
+def nameless_copy(game: ParsedGame, source_game_id: str) -> ParsedGame:
+    """
+    the same game under another gameID with every name blanked, like 6624785.
+    """
+    lines = tuple(line.model_copy(update={"first_name": None, "last_name": None}) for line in game.box_score.lines)
+    match = game.match.model_copy(update={"source_game_id": source_game_id})
+    return ParsedGame(match, game.scoreboard, game.box_score.model_copy(update={"lines": lines}))
+
+
+def test_load_game_matches_nameless_lines_by_number(database, ingest_run_id):
+    game = fixture_game("6625808")
+    load_game(database, game, ingest_run_id)
+
+    result = load_game(database, nameless_copy(game, "nameless"), ingest_run_id)
+
+    assert result.skipped_lines == 0
+    counts = table_counts(database)
+    assert counts["player"] == len(game.box_score.lines)
+    assert counts["box_score_line"] == 2 * len(game.box_score.lines)
+
+
+def test_load_game_nameless_before_roster_skips_then_matches_on_reload(database, ingest_run_id):
+    game = fixture_game("6625808")
+    nameless = nameless_copy(game, "nameless")
+
+    first = load_game(database, nameless, ingest_run_id)
+    load_game(database, game, ingest_run_id)
+    reload = load_game(database, nameless, ingest_run_id)
+
+    assert first.skipped_lines == len(game.box_score.lines)
+    assert reload.skipped_lines == 0
+
+
+def test_load_game_shared_number_is_skipped(database, ingest_run_id):
+    game = fixture_game("6625808")
+    lines = game.box_score.lines
+    # two teammates listed with the same number
+    shared = lines[1].model_copy(update={"number": lines[0].number}) if lines[1].seoname == lines[0].seoname else None
+    assert shared is not None
+    box_score = game.box_score.model_copy(update={"lines": (lines[0], shared, *lines[2:])})
+    load_game(database, ParsedGame(game.match, game.scoreboard, box_score, game.plays), ingest_run_id)
+
+    result = load_game(
+        database, nameless_copy(ParsedGame(game.match, game.scoreboard, box_score), "nameless"), ingest_run_id
+    )
+
+    assert result.skipped_lines == 2
+
+
+def test_load_game_box_score_team_not_in_details_raises(database, ingest_run_id):
+    game = fixture_game("6625808")
+    lines = (*game.box_score.lines[1:], game.box_score.lines[0].model_copy(update={"seoname": "somewhere-else"}))
+    box_score = game.box_score.model_copy(update={"lines": lines})
+
+    with pytest.raises(LoadError, match=r"6625808.*somewhere-else"):
+        load_game(database, ParsedGame(game.match, game.scoreboard, box_score, game.plays), ingest_run_id)
+
+    assert sum(table_counts(database).values()) == 1
+
+
+def test_load_game_play_team_not_in_details_raises(database, ingest_run_id):
+    game = fixture_game("6625808")
+    plays = (game.plays[0].model_copy(update={"scoring_seoname": "somewhere-else"}), *game.plays[1:])
+
+    with pytest.raises(LoadError, match="somewhere-else"):
+        load_game(database, ParsedGame(game.match, game.scoreboard, game.box_score, plays), ingest_run_id)
