@@ -53,10 +53,17 @@ SET_LABELS = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "1st": 1, "2nd": 2, "3rd":
 
 # play text patterns, matched against the text with whitespace collapsed.
 # names are lazy so the optional (from ...) or (block by ...) and the final
-# period aren't swallowed into the name
+# period aren't swallowed into the name. Some feeds leave out the space
+# before "(" (Bella Correia(block by ...)), and an attack error can have no
+# attacker at all (Attack error by (block by ...)), which leaves it empty
 PLAY_PATTERNS = [
-    (PlayType.KILL, re.compile(r"Kill by (?P<attacker>.+?)(?: \(from (?P<setter>.*)\))?\.?")),
-    (PlayType.ATTACK_ERROR, re.compile(r"Attack error by (?P<attacker>.+?)(?: \(block by (?P<blockers>.*)\))?\.?")),
+    (PlayType.KILL, re.compile(r"Kill by (?P<attacker>.+?)(?:\s*\(from (?P<setter>.*)\))?\.?")),
+    (
+        PlayType.ATTACK_ERROR,
+        re.compile(
+            r"Attack error by (?P<attacker>.*?)\s*(?:\((?:block by (?P<blockers>.*)|from (?P<setter>.*))\))?\.?"
+        ),
+    ),
     (PlayType.SERVICE_ACE, re.compile(r"Service ace \((?P<aced_receiver>.+)\)\.?")),
     (PlayType.SERVICE_ERROR, re.compile(r"Service error\.?")),
     (PlayType.BAD_SET, re.compile(r"Bad set by (?P<setter>.+?)\.?")),
@@ -65,8 +72,9 @@ PLAY_PATTERNS = [
 ]
 LINEUP_PATTERN = re.compile(r".+ (?:starters|subs):.*")
 BLOCKER_SEPARATOR = re.compile(r"[,;]")
-# "Service ace (Team)." when the receiver wasn't recorded
-NO_PLAYER = "Team"
+# "Service ace (Team)." or "(TEAM)." when the receiver wasn't recorded,
+# compared casefolded
+NO_PLAYER = "team"
 
 
 class ParseError(Exception):
@@ -411,7 +419,7 @@ def classify_play(text: str) -> tuple[PlayType, list[PlayPlayer]]:
         for group, names in found.groupdict().items():
             # "block by )" happens, and "Team" stands in for a receiver
             # nobody recorded, neither names a player
-            if not names or names == NO_PLAYER:
+            if not names or names.casefold() == NO_PLAYER:
                 continue
             if group == "blockers":
                 # blockers are split by ", " or "; " depending on the feed

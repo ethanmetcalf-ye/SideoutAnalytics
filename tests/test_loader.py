@@ -197,9 +197,7 @@ def test_load_game_skips_lines_without_names(database, ingest_run_id):
 def test_load_game_links_play_players(database, ingest_run_id):
     result = load_game(database, fixture_game("6625808"), ingest_run_id)
 
-    # one kill is "from" a player on the other team (Kill by Ashlyn Anderson
-    # (from Greta Pleuss)), likely an overpass, so there's no setter to link
-    assert result.unmatched_names == 1
+    assert result.unmatched_names == 0
     # every kill has its attacker, on the team that scored
     unlinked = fetch_value(
         database,
@@ -414,3 +412,21 @@ def test_load_game_play_team_not_in_details_raises(database, ingest_run_id):
 
     with pytest.raises(LoadError, match="somewhere-else"):
         load_game(database, ParsedGame(game.match, game.scoreboard, game.box_score, plays), ingest_run_id)
+
+
+def test_load_game_cross_team_from_is_last_touch(database, ingest_run_id):
+    load_game(database, fixture_game("6625808"), ingest_run_id)
+
+    # Kill by Ashlyn Anderson (from Greta Pleuss), Pleuss plays for the other team
+    rows = database.execute(
+        """
+        SELECT play_player.role, box_score_line.team_id = play.scoring_team_id
+        FROM play
+        JOIN play_player USING (play_id)
+        JOIN box_score_line ON box_score_line.match_id = play.match_id
+            AND box_score_line.player_id = play_player.player_id
+        WHERE play.play_text = 'Kill by Ashlyn Anderson (from Greta Pleuss).'
+        ORDER BY play_player.role
+        """
+    ).fetchall()
+    assert rows == [("attacker", True), ("last_touch", False)]

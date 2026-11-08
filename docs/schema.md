@@ -436,11 +436,18 @@ One row per player named in a play.
 | --- | --- | --- |
 | play_id | bigint | **PK**, FK → `play` |
 | player_id | bigint | **PK**, FK → `player` |
-| role | text | **PK**. `attacker`, `setter`, `blocker`, or `aced_receiver` |
+| role | text | **PK**. `attacker`, `setter`, `blocker`, `aced_receiver`, or `last_touch` |
 
 Roles come from the play text: "Kill by X (from Y)" gives an attacker and a
-setter, "Attack error by X (block by A, B)" an attacker and blockers, and
-"Service ace (X)" the receiver who was aced.
+setter, "Attack error by X (block by A, B)" an attacker and blockers,
+"Attack error by X (from Y)" an attacker and a setter, and "Service ace (X)"
+the receiver who was aced.
+
+When a kill's Y is on the other team, about twice a game, Y isn't a setter
+but the last player to touch the ball before the kill, usually on an
+overpass, and gets the role `last_touch`. Box score assists count a player's
+same-team `(from ...)` kills and not these. Storing the row instead of
+dropping it follows decision 13.
 
 ### team_rank
 
@@ -512,7 +519,7 @@ W1-05 implements these as `CHECK` constraints.
 | `box_score_line` | `sets_played BETWEEN 0 AND 5`; every count column `>= 0` |
 | `team_set_stats` | `set_number BETWEEN 1 AND 5`; every count column `>= 0` |
 | `play` | `set_number BETWEEN 1 AND 5`, `sequence >= 1`, `home_score >= 0`, `away_score >= 0`, `play_type IN ('kill', 'attack_error', 'service_ace', 'service_error', 'bad_set', 'ball_handling_error', 'other')` |
-| `play_player` | `role IN ('attacker', 'setter', 'blocker', 'aced_receiver')` |
+| `play_player` | `role IN ('attacker', 'setter', 'blocker', 'aced_receiver', 'last_touch')` |
 | `team_rank` | `ranking >= 1`, `total_points >= 0`, `first_place_votes >= 0` |
 | `ingest_run` | `status IN ('running', 'succeeded', 'failed')`, `finished_at >= started_at` |
 | `prediction` | `home_win_probability BETWEEN 0 AND 1` |
