@@ -488,6 +488,14 @@ One row per pipeline run.
 | finished_at | timestamptz | Nullable while running |
 | status | text | `running`, `succeeded`, or `failed` |
 | error | text | Nullable. Error message if failed |
+| games_in_index | int | Nullable. Games in the season index the run built |
+| games_loaded | int | Nullable. Games loaded because a file was new or changed |
+| games_unchanged | int | Nullable. Games with files whose hashes all matched `raw_response`, not loaded |
+| games_failed | int | Nullable. Games that couldn't be parsed or loaded |
+| requests_failed | int | Nullable. Requests that failed for good, not counting matches that haven't been played yet |
+
+The counts are NULL while a run is going, when it stopped before counting
+(a crash or Ctrl-C), and for jobs they don't apply to.
 
 ### raw_response
 
@@ -531,7 +539,7 @@ W1-05 implements these as `CHECK` constraints.
 | `play` | `set_number BETWEEN 1 AND 5`, `sequence >= 1`, `home_score >= 0`, `away_score >= 0`, `play_type IN ('kill', 'attack_error', 'service_ace', 'service_error', 'bad_set', 'ball_handling_error', 'other')` |
 | `play_player` | `role IN ('attacker', 'setter', 'blocker', 'aced_receiver', 'overpass')` |
 | `team_rank` | `ranking >= 1`, `total_points >= 0`, `first_place_votes >= 0` |
-| `ingest_run` | `status IN ('running', 'succeeded', 'failed')`, `finished_at >= started_at` |
+| `ingest_run` | `status IN ('running', 'succeeded', 'failed')`, `finished_at >= started_at`; every count column `>= 0` |
 | `prediction` | `home_win_probability BETWEEN 0 AND 1` |
 
 ## Delete behavior

@@ -180,3 +180,31 @@ def test_finish_run_records_status(database):
     query = "SELECT status, error, finished_at IS NOT NULL FROM ingest_run WHERE ingest_run_id = %s"
     assert database.execute(query, (succeeded,)).fetchone() == ("succeeded", None, True)
     assert database.execute(query, (failed,)).fetchone() == ("failed", "2 games failed to load", True)
+
+
+def test_finish_run_records_counts(database):
+    loads = ingest.LoadSummary(loaded=3, unchanged=10, failed_games=(ingest.FailedGame("9", ValueError()),))
+    summary = ingest.RunSummary(1, 14, loads, (FailedRequest("/game/2", FailedFetchError()),))
+    ingest_run_id = ingest.start_run(database, "test")
+    ingest.finish_run(database, ingest_run_id, summary.error, summary.counts)
+
+    row = database.execute(
+        "SELECT games_in_index, games_loaded, games_unchanged, games_failed, requests_failed "
+        "FROM ingest_run WHERE ingest_run_id = %s",
+        (ingest_run_id,),
+    ).fetchone()
+    assert row == (14, 3, 10, 1, 1)
+
+
+def test_finish_run_without_counts_leaves_them_null(database):
+    """
+    a run that stopped before counting has no counts, not zeros.
+    """
+    ingest_run_id = ingest.start_run(database, "test")
+    ingest.finish_run(database, ingest_run_id, "KeyboardInterrupt: ")
+    assert fetch_value(database, "SELECT games_loaded FROM ingest_run WHERE ingest_run_id = %s", ingest_run_id) is None
+
+
+def test_finish_run_rejects_unknown_counts():
+    with pytest.raises(ValueError, match="games_skipped"):
+        ingest.finish_run(None, 1, None, {"games_skipped": 1})

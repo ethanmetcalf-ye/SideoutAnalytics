@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo
 import psycopg
 
 from ..db.loader import LoadError, LoadResult, ParsedGame, connect, load_game
-from ..db.tables import IngestStatus
+from ..db.tables import INGEST_RUN_COUNTS, IngestStatus
 from ..settings import get_settings
 from . import parse
 from .cache import RawStore
@@ -97,6 +97,19 @@ class RunSummary:
         don't count.
         """
         return tuple(error for error in self.fetch_errors if not isinstance(error.error, NotAvailableYetError))
+
+    @property
+    def counts(self) -> dict[str, int]:
+        """
+        the run's ingest_run count columns.
+        """
+        return {
+            "games_in_index": self.games_in_index,
+            "games_loaded": self.loads.loaded,
+            "games_unchanged": self.loads.unchanged,
+            "games_failed": len(self.loads.failed_games),
+            "requests_failed": len(self.failed_requests),
+        }
 
     @property
     def error(self) -> str | None:
@@ -163,14 +176,25 @@ def start_run(connection: psycopg.Connection, job: str) -> int:
     ).fetchone()[0]
 
 
-def finish_run(connection: psycopg.Connection, ingest_run_id: int, error: str | None) -> None:
+def finish_run(
+    connection: psycopg.Connection, ingest_run_id: int, error: str | None, counts: dict[str, int] | None = None
+) -> None:
     """
-    closes the run's ingest_run row, failed when there's an error.
+    closes the run's ingest_run row, failed when there's an error. counts
+    are keyed by column, a count that's left out stays NULL. Raises
+    ValueError on a key that isn't a count column.
     """
+    counts = counts or {}
+    unknown = set(counts) - set(INGEST_RUN_COUNTS)
+    if unknown:
+        raise ValueError(f"Not ingest_run count columns: {sorted(unknown)}")
     status = IngestStatus.FAILED if error else IngestStatus.SUCCEEDED
+    # the column list is fixed, so a count left out is written as NULL
+    # rather than the SQL being built from the keys
     connection.execute(
-        "UPDATE ingest_run SET finished_at = now(), status = %s, error = %s WHERE ingest_run_id = %s",
-        (status.value, error, ingest_run_id),
+        f"UPDATE ingest_run SET finished_at = now(), status = %s, error = %s, "  # noqa: S608
+        f"{', '.join(f'{column} = %s' for column in INGEST_RUN_COUNTS)} WHERE ingest_run_id = %s",
+        (status.value, error, *(counts.get(column) for column in INGEST_RUN_COUNTS), ingest_run_id),
     )
 
 
@@ -360,5 +384,5 @@ def run(job: str, season_years: list[int], reload_all: bool = False) -> RunSumma
         summary = RunSummary(
             ingest_run_id=ingest_run_id, games_in_index=len(games), loads=loads, fetch_errors=tuple(fetch_errors)
         )
-        finish_run(connection, ingest_run_id, summary.error)
+        finish_run(connection, ingest_run_id, summary.error, summary.counts)
         return summary
