@@ -1,12 +1,18 @@
+import dataclasses
+import datetime as dt
+import json
 import pathlib
 import shutil
+import signal
 
+import httpx
 import pytest
 
+from sideout_analytics.db.loader import LoadError, connect
 from sideout_analytics.db.tables import MatchState
-from sideout_analytics.pipeline import ingest
+from sideout_analytics.pipeline import cli, ingest
 from sideout_analytics.pipeline.cache import RawStore, hash_content
-from sideout_analytics.pipeline.client import FailedFetchError, NotAvailableYetError
+from sideout_analytics.pipeline.client import Client, FailedFetchError, NotAvailableYetError
 from sideout_analytics.pipeline.fetch import FailedRequest, FetchedFile, Game
 
 RAW_FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "raw"
@@ -208,3 +214,206 @@ def test_finish_run_without_counts_leaves_them_null(database):
 def test_finish_run_rejects_unknown_counts():
     with pytest.raises(ValueError, match="games_skipped"):
         ingest.finish_run(None, 1, None, {"games_skipped": 1})
+
+
+# failures across runs
+
+
+def test_run_summary_ignores_known_failures():
+    """
+    a game that was already failing doesn't fail the run again.
+    """
+    known = ingest.FailedGame(GAME_ID, ValueError(), new=False)
+    summary = ingest.RunSummary(1, 1, ingest.LoadSummary(loaded=0, unchanged=0, failed_games=(known,)), ())
+    assert summary.error is None
+    assert summary.counts["games_failed"] == 1
+
+    new = ingest.FailedGame("2", ValueError())
+    summary = ingest.RunSummary(1, 2, ingest.LoadSummary(loaded=0, unchanged=0, failed_games=(known, new)), ())
+    assert summary.error == "1 games failed to load for the first time"
+
+
+def test_load_games_failure_is_new_only_once(database, raw_store, data_directory, ingest_run_id):
+    files = fetched_files(raw_store, GAME_ENDPOINTS)
+    broken = fixture_game(scoreboard_endpoint=None)
+    first = ingest.load_games(database, raw_store, broken, files, ingest_run_id, data_directory)
+    second = ingest.load_games(database, raw_store, broken, files, ingest_run_id, data_directory)
+
+    assert [failed.new for failed in first.failed_games] == [True]
+    assert [failed.new for failed in second.failed_games] == [False]
+    assert fetch_value(database, "SELECT count(*) FROM load_failure WHERE source_game_id = %s", GAME_ID) == 1
+
+
+def test_load_games_success_clears_failure(database, raw_store, data_directory, ingest_run_id):
+    files = fetched_files(raw_store, GAME_ENDPOINTS)
+    ingest.load_games(database, raw_store, fixture_game(scoreboard_endpoint=None), files, ingest_run_id, data_directory)
+    ingest.load_games(database, raw_store, fixture_game(), files, ingest_run_id, data_directory)
+    assert fetch_value(database, "SELECT count(*) FROM load_failure") == 0
+
+
+# skipped lines
+
+
+def skipping_load_game(monkeypatch, results: list) -> None:
+    """
+    wraps load_game so each call loads for real, then returns the next of
+    results: a skipped_lines count, or an exception to raise instead.
+    """
+    real_load_game = ingest.load_game
+    remaining = iter(results)
+
+    def fake_load_game(connection, game, ingest_run_id):
+        result = real_load_game(connection, game, ingest_run_id)
+        outcome = next(remaining)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return dataclasses.replace(result, skipped_lines=outcome)
+
+    monkeypatch.setattr(ingest, "load_game", fake_load_game)
+
+
+def test_load_games_game_with_skipped_lines_is_retried_next_run(
+    database, raw_store, data_directory, ingest_run_id, monkeypatch
+):
+    """
+    a game that still has skipped lines after the second pass isn't marked
+    loaded, so the next run loads it again, and once it loads clean it's
+    marked.
+    """
+    skipping_load_game(monkeypatch, [1, 1, 1, 1, 0])
+    files = fetched_files(raw_store, GAME_ENDPOINTS)
+
+    first = ingest.load_games(database, raw_store, fixture_game(), files, ingest_run_id, data_directory)
+    assert first.loaded == 1
+    assert fetch_value(database, "SELECT count(*) FROM raw_response") == 0
+
+    # skipped in both passes again, then clean in the third run's first pass
+    assert ingest.load_games(database, raw_store, fixture_game(), files, ingest_run_id, data_directory).loaded == 1
+    assert ingest.load_games(database, raw_store, fixture_game(), files, ingest_run_id, data_directory).loaded == 1
+    assert fetch_value(database, "SELECT count(*) FROM raw_response") == 3
+    assert ingest.load_games(database, raw_store, fixture_game(), files, ingest_run_id, data_directory).loaded == 0
+
+
+def test_load_games_reload_pass_failure_counts_once(database, raw_store, data_directory, ingest_run_id, monkeypatch):
+    """
+    a game that loads in the first pass and fails in the second is failed,
+    not loaded and failed.
+    """
+    skipping_load_game(monkeypatch, [1, LoadError("broken on reload")])
+    files = fetched_files(raw_store, GAME_ENDPOINTS)
+    summary = ingest.load_games(database, raw_store, fixture_game(), files, ingest_run_id, data_directory)
+    assert summary.loaded == 0
+    assert [failed.game_id for failed in summary.failed_games] == [GAME_ID]
+
+
+# run lifecycle
+
+
+def test_start_run_closes_abandoned_runs(database):
+    """
+    a run that was killed leaves its row running. The next run holds the
+    lock, so that row can't be a run still going.
+    """
+    killed = ingest.start_run(database, "backfill")
+    ingest.start_run(database, "poll")
+    row = database.execute(
+        "SELECT status, error, finished_at IS NOT NULL FROM ingest_run WHERE ingest_run_id = %s", (killed,)
+    )
+    assert row.fetchone() == ("failed", "abandoned", True)
+
+
+def test_exit_on_sigterm_raises_system_exit():
+    with pytest.raises(SystemExit) as raised:
+        cli.exit_on_sigterm(signal.SIGTERM, None)
+    assert raised.value.code == 128 + signal.SIGTERM
+
+
+@pytest.fixture
+def fetch_cache(data_directory) -> None:
+    """
+    completes the fixture cache for a run of the 2025 season with one game:
+    a schedule with its one date, and the scoreboard cut down to that game.
+    Everything is final and cached, so a run makes no requests.
+    """
+    raw = data_directory / "raw"
+    schedule = raw / "schedule-alt" / "volleyball-women" / "d1" / "2025.json"
+    schedule.parent.mkdir(parents=True)
+    games = [{"contestDate": "12/05/2025", "count": 1}]
+    schedule.write_text(json.dumps({"data": {"schedules": {"games": games, "today": ""}}}))
+
+    scoreboard = raw / "scoreboard" / "volleyball-women" / "d1" / "2025" / "12" / "05.json"
+    content = json.loads(scoreboard.read_bytes())
+    content["games"] = [entry for entry in content["games"] if entry["game"]["gameID"] == GAME_ID]
+    scoreboard.write_text(json.dumps(content))
+
+
+class RecordingApi:
+    """
+    a client transport that records every request and answers 404, for
+    runs that shouldn't touch the network.
+    """
+
+    def __init__(self) -> None:
+        self.requested_paths = []
+
+    def client(self) -> Client:
+        def handle(request: httpx.Request) -> httpx.Response:
+            self.requested_paths.append(request.url.path)
+            return httpx.Response(404)
+
+        return Client(
+            base_url="https://api.test",
+            user_agent="sideout-analytics-tests/0.1",
+            transport=httpx.MockTransport(handle),
+            rate_limit_per_sec=1000,
+        )
+
+
+def run_2025(connection, api: RecordingApi, raw_store, data_directory) -> ingest.RunSummary:
+    return ingest.run(connection, api.client(), raw_store, "test", [2025], dt.date(2026, 11, 11), data_directory)
+
+
+@pytest.mark.usefixtures("fetch_cache")
+def test_run_loads_from_cache_then_skips(database, raw_store, data_directory):
+    api = RecordingApi()
+    first = run_2025(database, api, raw_store, data_directory)
+    second = run_2025(database, api, raw_store, data_directory)
+
+    assert api.requested_paths == []
+    assert (first.loads.loaded, second.loads.loaded, second.loads.unchanged) == (1, 0, 1)
+    row = database.execute(
+        "SELECT status, games_in_index, games_loaded, games_unchanged FROM ingest_run WHERE ingest_run_id = %s",
+        (second.ingest_run_id,),
+    ).fetchone()
+    assert row == ("succeeded", 1, 0, 1)
+
+
+@pytest.mark.usefixtures("fetch_cache")
+def test_run_refuses_while_another_run_holds_the_lock(database, database_schema, raw_store, data_directory):
+    database_url, _schema = database_schema
+    with connect(database_url) as other_run:
+        assert ingest.try_run_lock(other_run)
+        with pytest.raises(ingest.RunInProgressError):
+            run_2025(database, RecordingApi(), raw_store, data_directory)
+    assert fetch_value(database, "SELECT count(*) FROM ingest_run") == 0
+
+
+@pytest.mark.usefixtures("fetch_cache")
+def test_run_interrupted_closes_its_row_and_lock(database, database_schema, raw_store, data_directory, monkeypatch):
+    """
+    an exception that stops the run, here a SIGTERM turned into SystemExit,
+    still closes the row as failed and gives the lock back.
+    """
+
+    def interrupted(*_args, **_kwargs):
+        raise SystemExit(143)
+
+    monkeypatch.setattr(ingest, "load_games", interrupted)
+    with pytest.raises(SystemExit):
+        run_2025(database, RecordingApi(), raw_store, data_directory)
+
+    row = database.execute("SELECT status, error, games_loaded FROM ingest_run").fetchone()
+    assert row == ("failed", "SystemExit: 143", None)
+    database_url, _schema = database_schema
+    with connect(database_url) as next_run:
+        assert ingest.try_run_lock(next_run)

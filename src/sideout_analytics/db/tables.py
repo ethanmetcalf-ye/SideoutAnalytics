@@ -437,6 +437,17 @@ class RawResponse(Base):
     ingest_run_id: Mapped[int] = mapped_column(ForeignKey("ingest_run.ingest_run_id"))
 
 
+class LoadFailure(Base):
+    __tablename__ = "load_failure"
+
+    # the API gameID, not a match FK: a game that fails to parse has no match
+    source_game_id: Mapped[str] = mapped_column(primary_key=True)
+    first_failed_at: Mapped[datetime]
+    last_failed_at: Mapped[datetime]
+    error: Mapped[str]
+    ingest_run_id: Mapped[int] = mapped_column(ForeignKey("ingest_run.ingest_run_id"))
+
+
 class Prediction(Base):
     __tablename__ = "prediction"
     __table_args__ = (CheckConstraint("home_win_probability BETWEEN 0 AND 1", name="probability_range"),)

@@ -512,6 +512,26 @@ The response bodies are not stored in the database.
 | fetched_at | timestamptz | |
 | ingest_run_id | bigint | FK → `ingest_run` |
 
+`raw_response` rows are written only after a game loads, so they also record
+which files are in the database. A game is loaded again when one of its files
+has no row or a different hash. A game whose box score still has skipped
+lines gets no rows, so later runs retry it.
+
+### load_failure
+
+One row per game that is failing to parse or load. Its row is deleted when the
+game loads. A run fails only on a game's first failure; later failures are
+logged and counted but don't fail the run, so one broken game doesn't fail
+every run until the parser is fixed.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| source_game_id | text | **PK**. API `gameID`. Not an FK to `match`: a game that fails to parse has no match row |
+| first_failed_at | timestamptz | |
+| last_failed_at | timestamptz | |
+| error | text | The most recent error |
+| ingest_run_id | bigint | FK → `ingest_run`. The run that last failed it |
+
 ### prediction
 
 Model output, kept separate from facts. Rows are never updated.
@@ -590,6 +610,7 @@ erDiagram
     season ||--o{ team_rank : "during"
     ingest_run ||--o{ match : "last updated"
     ingest_run ||--o{ raw_response : "fetched"
+    ingest_run ||--o{ load_failure : "last failed"
     match |o--o{ raw_response : "about"
     match ||--o{ prediction : "predicted by"
 
@@ -670,6 +691,10 @@ erDiagram
         bigint raw_response_id PK
         text file_path UK
         bigint match_id FK
+        bigint ingest_run_id FK
+    }
+    load_failure {
+        text source_game_id PK
         bigint ingest_run_id FK
     }
     prediction {
