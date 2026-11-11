@@ -197,9 +197,15 @@ class Roster(Base):
     position: Mapped[str | None]
 
 
+INGEST_RUN_COUNTS = ("games_in_index", "games_loaded", "games_unchanged", "games_failed", "requests_failed")
+
+
 class IngestRun(Base):
     __tablename__ = "ingest_run"
-    __table_args__ = (CheckConstraint("finished_at >= started_at", name="finished_after_started"),)
+    __table_args__ = (
+        CheckConstraint("finished_at >= started_at", name="finished_after_started"),
+        *non_negative(*INGEST_RUN_COUNTS),
+    )
 
     ingest_run_id: Mapped[Id]
     job: Mapped[str]
@@ -207,6 +213,13 @@ class IngestRun(Base):
     finished_at: Mapped[datetime | None]
     status: Mapped[IngestStatus]
     error: Mapped[str | None]
+    # NULL until the run finishes, and for jobs a count doesn't apply to
+    # plain int, not the bigint a bare Mapped[int] gets
+    games_in_index: Mapped[int | None] = mapped_column(Integer)
+    games_loaded: Mapped[int | None] = mapped_column(Integer)
+    games_unchanged: Mapped[int | None] = mapped_column(Integer)
+    games_failed: Mapped[int | None] = mapped_column(Integer)
+    requests_failed: Mapped[int | None] = mapped_column(Integer)
 
 
 class Match(Base):
@@ -421,6 +434,17 @@ class RawResponse(Base):
     content_hash: Mapped[str]
     match_id: Mapped[int | None] = mapped_column(ForeignKey("match.match_id"))
     fetched_at: Mapped[datetime]
+    ingest_run_id: Mapped[int] = mapped_column(ForeignKey("ingest_run.ingest_run_id"))
+
+
+class LoadFailure(Base):
+    __tablename__ = "load_failure"
+
+    # the API gameID, not a match FK: a game that fails to parse has no match
+    source_game_id: Mapped[str] = mapped_column(primary_key=True)
+    first_failed_at: Mapped[datetime]
+    last_failed_at: Mapped[datetime]
+    error: Mapped[str]
     ingest_run_id: Mapped[int] = mapped_column(ForeignKey("ingest_run.ingest_run_id"))
 
 

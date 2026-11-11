@@ -3,11 +3,10 @@ import datetime as dt
 import json
 import logging
 import pathlib
-from dataclasses import dataclass
-from zoneinfo import ZoneInfo
+import time
+from dataclasses import dataclass, field, replace
 
 from ..db.tables import MatchState
-from ..settings import get_settings
 from .cache import CachedResponse, RawStore
 from .client import Client, FailedFetchError, NotAvailableYetError
 
@@ -19,11 +18,16 @@ class Game:
     """
     One game from a scoreboard. state is pre, live or final, the game
     fetcher uses it to decide which games still need a refresh.
+    scoreboard_endpoint is the scoreboard the game was found on, set by
+    get_season_index so the loader can parse the game's conferences and
+    round from it. Left out of equality, it's where the game came from,
+    not part of the game.
     """
 
     game_id: str
     start_epoch: int
     state: MatchState
+    scoreboard_endpoint: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -116,6 +120,12 @@ class Fetcher:
         month, day, year = map(int, contest_date.split("/"))
         return dt.date(year, month, day)
 
+    def scoreboard_endpoint(self, date: dt.date) -> str:
+        """
+        the scoreboard endpoint for one date.
+        """
+        return f"/scoreboard/{self.sport}/{self.division}/{date:%Y/%m/%d}"
+
     def has_unsettled_games(self, endpoint: str) -> bool:
         """
         true if the cached scoreboard for an endpoint has any game that isn't
@@ -146,6 +156,16 @@ class Fetcher:
             return not (details["hasBoxscore"] and details["hasPbp"])
         except (IndexError, KeyError, json.JSONDecodeError):
             return True
+
+    def needs_requests(self, game: Game) -> bool:
+        """
+        true if processing a final game will hit the API, its details aren't
+        cached yet or are being refreshed. the rest come straight from disk
+        in milliseconds, so progress only counts these.
+        """
+        details_endpoint = f"/game/{game.game_id}"
+        details_file = self.raw_store.map_endpoint_cache_file(details_endpoint)
+        return not details_file.is_file() or self.has_missing_game_files(details_endpoint)
 
     async def make_requests(
         self, api_calls: list[tuple[str, bool]]
@@ -191,7 +211,7 @@ class Fetcher:
         that isn't final, otherwise they come from the cache (ADR-004).
         """
         yesterday = self.current_date - dt.timedelta(days=1)
-        endpoint_dates = {f"/scoreboard/{self.sport}/{self.division}/{date:%Y/%m/%d}": date for date in dates}
+        endpoint_dates = {self.scoreboard_endpoint(date): date for date in dates}
         date_scoreboard_calls = [
             (endpoint, date >= yesterday or self.has_unsettled_games(endpoint))
             for endpoint, date in endpoint_dates.items()
@@ -224,7 +244,7 @@ class Fetcher:
                 first_date = game_dates.setdefault(game.game_id, date)
                 if first_date != date:
                     raise ValueError(f"Game {game.game_id} is on the scoreboards for both {first_date} and {date}")
-                games_index[game.game_id] = game
+                games_index[game.game_id] = replace(game, scoreboard_endpoint=self.scoreboard_endpoint(date))
         return games_index, schedule_errors + scoreboard_errors
 
     async def process_game(self, game: Game) -> tuple[dict[str, FetchedFile], list[FailedRequest]]:
@@ -279,21 +299,37 @@ class Fetcher:
         return FetchedFile(endpoint, response.cache_file, response.content_hash)
 
     async def fetch_one_game(
-        self, game: Game, semaphore: asyncio.Semaphore, progress: dict[str, int]
+        self, game: Game, semaphore: asyncio.Semaphore, progress: dict[str, float], counts_toward_progress: bool
     ) -> tuple[dict[str, FetchedFile], list[FailedRequest]]:
         """
         runs process_game for one game once the semaphore lets it in, and
-        logs progress every 10% of the run. progress is shared by every
-        task, safe without a lock since the count never spans an await.
+        logs progress for the games that hit the API. cached games don't
+        count, they'd race the log to most of the way done in seconds.
+        progress is shared by every task, safe without a lock since the
+        count never spans an await.
         """
         async with semaphore:
             logger.debug("Game %s starting", game.game_id)
             results = await self.process_game(game=game)
             logger.debug("Game %s finished", game.game_id)
-            progress["completed"] += 1
-            step = max(1, progress["total"] // 10)
-            if progress["completed"] % step == 0 or progress["completed"] == progress["total"]:
-                logger.info("%s of %s games processed", progress["completed"], progress["total"])
+            if counts_toward_progress:
+                progress["completed"] += 1
+                completed, total = int(progress["completed"]), int(progress["total"])
+                # every 10% of the games that hit the API, plus the last one.
+                # rate and eta come from the time since the first game started,
+                # so a slow start or end evens out over the run
+                step = max(1, total // 10)
+                if completed % step == 0 or completed == total:
+                    elapsed = time.monotonic() - progress["started"]
+                    rate = completed / elapsed if elapsed > 0 else 0.0
+                    eta = (total - completed) / rate if rate > 0 else 0.0
+                    logger.info(
+                        "%s of %s games processed, %.1f games/s, about %s left",
+                        completed,
+                        total,
+                        rate,
+                        dt.timedelta(seconds=round(eta)),
+                    )
             return results
 
     async def process_games_index(self, games: list[Game]) -> tuple[dict[str, FetchedFile], list[FailedRequest]]:
@@ -308,11 +344,18 @@ class Fetcher:
 
         task_list = []
         final_games = [game for game in games if game.state == MatchState.FINAL]
-        progress = {"total": len(final_games), "completed": 0}
+        # decided up front, before any task can write a details file and
+        # change the answer
+        game_needs_requests = {game.game_id: self.needs_requests(game) for game in final_games}
+        to_fetch = sum(game_needs_requests.values())
+        logger.info(
+            "%s final games, %s need requests, %s from cache", len(final_games), to_fetch, len(final_games) - to_fetch
+        )
+        progress = {"total": to_fetch, "completed": 0, "started": time.monotonic()}
 
         async with asyncio.TaskGroup() as tg:
             for game in final_games:
-                task = tg.create_task(self.fetch_one_game(game, semaphore, progress))
+                task = tg.create_task(self.fetch_one_game(game, semaphore, progress, game_needs_requests[game.game_id]))
                 task_list.append(task)
 
         files, errors = {}, []
@@ -321,30 +364,3 @@ class Fetcher:
             files |= game_files
             errors += game_errors
         return files, errors
-
-
-async def main() -> None:
-    """
-    runs the season index and game fetcher for the current season against
-    the real API. per game lines show at DEBUG, progress at INFO.
-    """
-    logging.basicConfig(level=get_settings().log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    today = dt.datetime.now(tz=ZoneInfo("America/New_York")).date()
-    async with Client.from_settings() as my_client:
-        my_rawstore = RawStore.from_settings()
-        fetcher = Fetcher(
-            [season_for(today)],
-            today,
-            client=my_client,
-            raw_store=my_rawstore,
-        )
-
-        games, errors = await fetcher.get_season_index()  # games = {"6639890": Game(...), ...}
-        files, game_errors = await fetcher.process_games_index(list(games.values()))
-        logger.info("games in index: %s, files on disk: %s", len(games), len(files))
-        logger.info("season index errors: %s", errors)
-        logger.info("game fetcher errors: %s", game_errors)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
