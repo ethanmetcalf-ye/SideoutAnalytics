@@ -9,12 +9,14 @@ from sideout_analytics.db.loader import connect
 from sideout_analytics.pipeline import ingest, snapshot
 from sideout_analytics.pipeline.cache import RawStore
 from sideout_analytics.pipeline.client import Client
-from sideout_analytics.pipeline.parse import ParseError, parse_poll
+from sideout_analytics.pipeline.parse import parse_poll
 
-POLL_FIXTURE = (
-    pathlib.Path(__file__).parent / "fixtures" / "raw" / "rankings" / "volleyball-women" / "d1" / "avca-coaches.json"
-)
+RANKINGS_FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "raw" / "rankings" / "volleyball-women" / "d1"
+POLL_FIXTURE = RANKINGS_FIXTURES / "avca-coaches.json"
+# a week the prototype saved, ending with a row of blanks
+OCT_4_FIXTURE = RANKINGS_FIXTURES / "avca-coaches" / "2026-10-04.json"
 POLL_SCHOOLS = [entry.school for entry in parse_poll(POLL_FIXTURE.read_bytes()).entries]
+OCT_4_SCHOOLS = [entry.school for entry in parse_poll(OCT_4_FIXTURE.read_bytes()).entries]
 
 
 class PollApi:
@@ -72,10 +74,10 @@ def add_team(connection, team_name: str, seoname: str | None = None) -> int:
 
 def add_poll_teams(connection, leave_out: tuple[str, ...] = ()) -> None:
     """
-    a team for every school in the fixture poll, named the way the API's
+    a team for every school in the fixture polls, named the way the API's
     short names are ("Penn St."), so the State -> St. rule is covered too.
     """
-    for school in POLL_SCHOOLS:
+    for school in dict.fromkeys(POLL_SCHOOLS + OCT_4_SCHOOLS):
         if school not in leave_out:
             add_team(connection, snapshot.short_form(school))
 
@@ -108,7 +110,7 @@ def test_snapshot_loads_the_current_week(database, raw_store):
     summary = run(database, raw_store)
 
     assert summary.new_week
-    assert summary.weeks == (snapshot.WeekResult(dt.date(2026, 11, 8), "loaded"),)
+    assert summary.weeks == (snapshot.WeekResult(dt.date(2026, 11, 8), snapshot.WeekStatus.LOADED),)
     assert summary.error is None
     assert count_ranks(database) == 25
     assert (snapshot.dated_directory(raw_store) / "2026-11-08.json").read_bytes() == POLL_FIXTURE.read_bytes()
@@ -158,7 +160,7 @@ def test_snapshot_unmatched_school_loads_nothing_until_aliased(database, raw_sto
 
     team_id = add_team(database, "Illinois Fighting Illini", seoname="illinois")
     database.execute("INSERT INTO team_alias (alias, team_id) VALUES ('Illinois', %s)", (team_id,))
-    assert run(database, raw_store).weeks[0].status == "loaded"
+    assert run(database, raw_store).weeks[0].status == snapshot.WeekStatus.LOADED
     assert count_ranks(database) == 25
 
 
@@ -180,19 +182,48 @@ def test_snapshot_waits_for_its_season(database, raw_store):
     add_poll_teams(database)
     summary = run(database, raw_store)
 
-    assert summary.weeks == (snapshot.WeekResult(dt.date(2026, 11, 8), "waiting"),)
+    assert summary.weeks == (snapshot.WeekResult(dt.date(2026, 11, 8), snapshot.WeekStatus.WAITING),)
     assert summary.error is None
     assert count_ranks(database) == 0
 
     add_season(database)
-    assert run(database, raw_store).weeks[0].status == "loaded"
+    assert run(database, raw_store).weeks[0].status == snapshot.WeekStatus.LOADED
 
 
-def test_snapshot_saves_an_unreadable_poll_before_failing(database, raw_store):
-    with pytest.raises(ParseError):
-        run(database, raw_store, body=week_of("Preseason"))
+def test_snapshot_loads_a_week_the_prototype_saved(database, raw_store):
+    """
+    the old snapshot files are copied into the dated folder by hand
+    (ADR-005), and the next run loads them. Oct. 4 ends with a row of
+    blanks, which is skipped.
+    """
+    add_season(database)
+    add_poll_teams(database)
+    raw_store.write_cache_to_disc(OCT_4_FIXTURE.read_bytes(), snapshot.dated_directory(raw_store) / "2026-10-04.json")
+    summary = run(database, raw_store)
 
-    assert [path.name.startswith("undated-") for path in snapshot.dated_directory(raw_store).iterdir()] == [True]
+    assert [(week.poll_date, week.status) for week in summary.weeks] == [
+        (dt.date(2026, 10, 4), snapshot.WeekStatus.LOADED),
+        (dt.date(2026, 11, 8), snapshot.WeekStatus.LOADED),
+    ]
+    assert count_ranks(database) == 50
+
+
+def test_snapshot_unreadable_file_fails_only_its_own_week(database, raw_store):
+    """
+    a current poll the parser can't read is saved as undated-..., reported
+    as unreadable and fails the run, and the weeks already saved still load.
+    """
+    add_season(database)
+    add_poll_teams(database)
+    snapshot.save_week(raw_store, POLL_FIXTURE.read_bytes())
+    summary = run(database, raw_store, body=week_of("Preseason"))
+
+    assert summary.current_poll_date is None
+    statuses = {week.status: week for week in summary.weeks}
+    assert statuses[snapshot.WeekStatus.UNREADABLE].file.startswith("undated-")
+    assert statuses[snapshot.WeekStatus.LOADED].poll_date == dt.date(2026, 11, 8)
+    assert "Preseason" in summary.error
+    assert count_ranks(database) == 25
     assert database.execute("SELECT status FROM ingest_run").fetchone()[0] == "failed"
 
 
@@ -204,7 +235,9 @@ def test_saved_weeks_keeps_one_poll_per_date(raw_store):
     content = POLL_FIXTURE.read_bytes()
     snapshot.save_week(raw_store, content)
     raw_store.write_cache_to_disc(content, snapshot.dated_directory(raw_store) / "undated-abc.json")
-    assert [poll.poll_date for poll in snapshot.saved_weeks(raw_store)] == [dt.date(2026, 11, 8)]
+    polls, unreadable = snapshot.read_saved_weeks(raw_store)
+    assert [poll.poll_date for poll in polls] == [dt.date(2026, 11, 8)]
+    assert unreadable == []
 
 
 def test_snapshot_takes_the_run_lock(database, database_schema, raw_store):

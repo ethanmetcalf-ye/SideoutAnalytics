@@ -15,7 +15,7 @@ from .cache import RawStore
 from .client import Client
 from .fetch import season_for
 from .ingest import RunInProgressError, RunSummary, run
-from .snapshot import SnapshotSummary, run_snapshot
+from .snapshot import FAILED_WEEK_STATUSES, SnapshotSummary, WeekStatus, run_snapshot
 
 app = typer.Typer(name="pipeline")
 logger = logging.getLogger(__name__)
@@ -155,17 +155,20 @@ def report_snapshot(summary: SnapshotSummary) -> None:
     """
     logs what the snapshot did and exits 1 if it failed.
     """
+    if summary.current_poll_date is None:
+        current = "current poll unreadable"
+    else:
+        current = f"poll through {summary.current_poll_date} ({'new week' if summary.new_week else 'already saved'})"
     logger.info(
-        "ingest run %s: poll through %s (%s), %s saved weeks loaded",
+        "ingest run %s: %s, %s saved weeks loaded",
         summary.ingest_run_id,
-        summary.current_poll_date,
-        "new week" if summary.new_week else "already saved",
-        sum(week.status == "loaded" for week in summary.weeks),
+        current,
+        sum(week.status == WeekStatus.LOADED for week in summary.weeks),
     )
     for week in summary.weeks:
-        if week.status == "waiting":
+        if week.status == WeekStatus.WAITING:
             logger.info("poll %s waits for its season to be loaded", week.poll_date)
-        elif week.status == "unmatched":
-            logger.warning("poll %s not loaded, no team for: %s", week.poll_date, ", ".join(week.unmatched))
+        elif week.status in FAILED_WEEK_STATUSES:
+            logger.warning("not loaded: %s", week.describe())
     if summary.error:
         raise typer.Exit(code=EXIT_RUN_FAILED)

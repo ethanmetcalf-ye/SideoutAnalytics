@@ -8,14 +8,19 @@ Decisions (ADR-005):
 - The API serves only the current week, so every run refreshes the poll and
   saves a dated copy, rankings/volleyball-women/d1/avca-coaches/{poll_date}.json,
   the first time it sees that week. The undated file is the latest response,
-  like any undated endpoint (ADR-003). The dated copies are the history.
-- A poll whose date can't be read is saved as undated-{hash}.json before the
-  run fails, so a format change doesn't lose the week. Once the parser
-  handles it, the next run loads it.
+  like any undated endpoint (ADR-003). The dated copies are the history,
+  including the weeks the prototype saved, copied in by hand (ADR-005).
+- A poll whose date can't be read is saved as undated-{hash}.json, so a
+  format change doesn't lose the week. Once the parser handles it, the next
+  run loads it.
 - Every run loads each saved week that isn't in team_rank yet, so a week
   that couldn't load before loads on a later run, and team_rank can be
   rebuilt from the files. A week already in team_rank is skipped: a poll
   isn't revised after it's published.
+- Each saved file is read on its own. A file that can't be parsed (an
+  undated one, or a format the parser doesn't know yet) is reported as
+  unreadable and fails the run, and every other week still loads, so one
+  bad file can't stop the rest.
 - A week loads all or nothing. Schools are matched by team_alias first, then
   by exact team_name, then by team_name with a trailing "State" written
   "St.", the API's short form ("Penn State" -> "Penn St."). A school with no
@@ -31,6 +36,7 @@ Decisions (ADR-005):
 
 import asyncio
 import datetime as dt
+import enum
 import logging
 import pathlib
 import re
@@ -55,49 +61,74 @@ VALUES (%s, %s, %s, %s, %s, %s, %s)
 """
 
 
+class WeekStatus(enum.StrEnum):
+    """
+    what a run did with a saved week that isn't in team_rank yet.
+    """
+
+    LOADED = "loaded"
+    # its season has no season row yet, loads on a later run
+    WAITING = "waiting"
+    # a school needs a team_alias row, nothing loaded, fails the run
+    UNMATCHED = "unmatched"
+    # the file can't be parsed, fails the run
+    UNREADABLE = "unreadable"
+
+
+FAILED_WEEK_STATUSES = {WeekStatus.UNMATCHED, WeekStatus.UNREADABLE}
+
+
 @dataclass(frozen=True)
 class WeekResult:
     """
-    what happened to one saved week that wasn't in team_rank yet. status is
-    loaded, waiting (no season row yet) or unmatched (schools that need a
-    team_alias row, nothing loaded).
+    one saved week the run tried to load. An unreadable file has no
+    poll_date, so it's named by file and its error instead.
     """
 
-    poll_date: dt.date
-    status: str
+    poll_date: dt.date | None
+    status: WeekStatus
     unmatched: tuple[str, ...] = ()
+    file: str | None = None
+    error: str | None = None
+
+    def describe(self) -> str:
+        """
+        the week in the run's error and log lines.
+        """
+        if self.status == WeekStatus.UNREADABLE:
+            return f"{self.file} unreadable: {self.error}"
+        if self.status == WeekStatus.UNMATCHED:
+            return f"poll {self.poll_date}: no team for {', '.join(self.unmatched)}"
+        return f"poll {self.poll_date} {self.status}"
 
 
 @dataclass(frozen=True)
 class SnapshotSummary:
     """
-    one snapshot run, what the CLI reports and exits on.
+    one snapshot run, what the CLI reports and exits on. current_poll_date
+    is None when the live poll couldn't be read.
     """
 
     ingest_run_id: int
-    current_poll_date: dt.date
+    current_poll_date: dt.date | None
     new_week: bool
     weeks: tuple[WeekResult, ...]
 
     @property
     def counts(self) -> dict[str, int]:
         """
-        the ingest_run count columns are per game, none apply here.
+        the ingest_run count columns are per game, and no per-game counts
+        apply to a snapshot, so they're left NULL on its row.
         """
         return {}
 
     @property
     def error(self) -> str | None:
         """
-        the ingest_run.error text, None when the run succeeded. Only
-        unmatched schools fail it, a waiting week loads by itself later.
+        the ingest_run.error text, None when the run succeeded. Unmatched
+        and unreadable weeks fail it, a waiting week loads by itself later.
         """
-        problems = [
-            f"poll {week.poll_date}: no team for {', '.join(week.unmatched)}"
-            for week in self.weeks
-            if week.status == "unmatched"
-        ]
-        return "; ".join(problems) or None
+        return "; ".join(week.describe() for week in self.weeks if week.status in FAILED_WEEK_STATUSES) or None
 
 
 def dated_directory(raw_store: RawStore) -> pathlib.Path:
@@ -116,19 +147,20 @@ async def fetch_poll(client: Client, raw_store: RawStore) -> bytes:
         return (await raw_store.get(client, POLL_ENDPOINT, refresh=True)).content
 
 
-def save_week(raw_store: RawStore, content: bytes) -> tuple[parse.Poll, bool]:
+def save_week(raw_store: RawStore, content: bytes) -> tuple[parse.Poll | None, bool]:
     """
     saves the poll as its week's dated copy unless that week is saved
-    already, and returns it with whether it was new. Raises ParseError if
-    the poll can't be read, after saving it as undated-{hash}.json.
+    already, and returns it with whether it was new. A poll that can't be
+    read is saved as undated-{hash}.json and returned as None, the run
+    reports it with the other saved files.
     """
     try:
         poll = parse.parse_poll(content)
     except parse.ParseError:
         undated = dated_directory(raw_store) / f"undated-{hash_content(content)[:12]}.json"
         raw_store.write_cache_to_disc(content, undated)
-        logger.warning("Could not read the poll, saved it as %s", undated)
-        raise
+        logger.warning("Could not read the current poll, saved it as %s", undated.name)
+        return None, False
 
     dated = raw_store.map_endpoint_cache_file(f"{POLL_ENDPOINT}/{poll.poll_date:%Y-%m-%d}")
     if dated.exists():
@@ -137,18 +169,24 @@ def save_week(raw_store: RawStore, content: bytes) -> tuple[parse.Poll, bool]:
     return poll, True
 
 
-def saved_weeks(raw_store: RawStore) -> list[parse.Poll]:
+def read_saved_weeks(raw_store: RawStore) -> tuple[list[parse.Poll], list[WeekResult]]:
     """
-    every saved week, oldest first, one poll per date: an undated file can
-    hold the same week as a dated one once the parser reads it. Raises
-    ParseError on a file that can't be read, an undated one included.
+    every saved week that parses, oldest first and one poll per date, and
+    an unreadable WeekResult for each file that doesn't. An undated file can
+    hold the same week as a dated one once the parser reads it, so only the
+    first file for a date is kept.
     """
-    # sorted so the dated copy (digits) wins over undated-... for a date
     polls: dict[dt.date, parse.Poll] = {}
+    unreadable = []
+    # sorted so a dated copy (digits) wins over undated-... for a date
     for path in sorted(dated_directory(raw_store).glob("*.json")):
-        poll = parse.parse_poll(path.read_bytes())
+        try:
+            poll = parse.parse_poll(path.read_bytes())
+        except parse.ParseError as e:
+            unreadable.append(WeekResult(None, WeekStatus.UNREADABLE, file=path.name, error=str(e)))
+            continue
         polls.setdefault(poll.poll_date, poll)
-    return [polls[poll_date] for poll_date in sorted(polls)]
+    return [polls[poll_date] for poll_date in sorted(polls)], unreadable
 
 
 def short_form(school: str) -> str:
@@ -190,7 +228,7 @@ def load_week(connection: psycopg.Connection, poll: parse.Poll, matcher: TeamMat
     """
     season = season_for(poll.poll_date)
     if connection.execute("SELECT 1 FROM season WHERE year = %s", (season,)).fetchone() is None:
-        return WeekResult(poll.poll_date, "waiting")
+        return WeekResult(poll.poll_date, WeekStatus.WAITING)
 
     team_ids = {entry.school: matcher.team_id(entry.school) for entry in poll.entries}
     seen: dict[int, str] = {}
@@ -201,7 +239,7 @@ def load_week(connection: psycopg.Connection, poll: parse.Poll, matcher: TeamMat
         else:
             seen[team_id] = school
     if unmatched:
-        return WeekResult(poll.poll_date, "unmatched", tuple(unmatched))
+        return WeekResult(poll.poll_date, WeekStatus.UNMATCHED, tuple(unmatched))
 
     rows = [
         (
@@ -217,7 +255,7 @@ def load_week(connection: psycopg.Connection, poll: parse.Poll, matcher: TeamMat
     ]
     with connection.transaction(), connection.cursor() as cursor:
         cursor.executemany(TEAM_RANK_INSERT, rows)
-    return WeekResult(poll.poll_date, "loaded")
+    return WeekResult(poll.poll_date, WeekStatus.LOADED)
 
 
 def loaded_weeks(connection: psycopg.Connection) -> set[dt.date]:
@@ -237,13 +275,17 @@ def run_snapshot(connection: psycopg.Connection, client: Client, raw_store: RawS
 
     def work(ingest_run_id: int) -> SnapshotSummary:
         current, new_week = save_week(raw_store, asyncio.run(fetch_poll(client, raw_store)))
-        logger.info("poll through %s, %s", current.poll_date, "new week saved" if new_week else "week already saved")
+        if current is not None:
+            logger.info(
+                "poll through %s, %s", current.poll_date, "new week saved" if new_week else "week already saved"
+            )
 
         loaded = loaded_weeks(connection)
         matcher = TeamMatcher(connection)
-        weeks = tuple(
-            load_week(connection, poll, matcher) for poll in saved_weeks(raw_store) if poll.poll_date not in loaded
+        polls, unreadable = read_saved_weeks(raw_store)
+        weeks = [load_week(connection, poll, matcher) for poll in polls if poll.poll_date not in loaded]
+        return SnapshotSummary(
+            ingest_run_id, None if current is None else current.poll_date, new_week, tuple(unreadable + weeks)
         )
-        return SnapshotSummary(ingest_run_id, current.poll_date, new_week, weeks)
 
     return run_job(connection, "snapshot", work)

@@ -586,3 +586,29 @@ def test_parse_poll_unknown_date_raises():
 def test_parse_poll_more_than_one_page_raises():
     with pytest.raises(ParseError, match="2 pages"):
         parse_poll(poll_body(pages=2))
+
+
+def test_parse_poll_skips_a_row_of_blanks():
+    """
+    the Oct. 4, 2026 poll the prototype saved ends with a row whose fields
+    are all blank.
+    """
+    oct_4 = RAW_FIXTURES / "rankings" / "volleyball-women" / "d1" / "avca-coaches" / "2026-10-04.json"
+    assert json.loads(oct_4.read_bytes())["data"][-1] == {
+        "RANK": "",
+        "SCHOOL": "",
+        "TOTAL POINTS": "",
+        "RECORD": "",
+        "PREVIOUS RANK": "",
+    }
+    poll = parse_poll(oct_4.read_bytes())
+
+    assert poll.poll_date == dt.date(2026, 10, 4)
+    assert [entry.ranking for entry in poll.entries] == list(range(1, 26))
+
+
+def test_parse_poll_partly_blank_row_raises():
+    row = {"RANK": "", "SCHOOL": "Nebraska", "TOTAL POINTS": "1575", "RECORD": "24-0", "PREVIOUS RANK": "1"}
+    content = json.dumps({"updated": "Through Games NOV. 8, 2026", "pages": 1, "data": [row]}).encode()
+    with pytest.raises(ParseError):
+        parse_poll(content)

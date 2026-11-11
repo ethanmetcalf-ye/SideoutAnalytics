@@ -443,9 +443,9 @@ def parse_poll(content: bytes) -> Poll:
     parses a /rankings file. The date comes from `updated`, "Through Games
     NOV. 8, 2026", and first-place votes from the school, "Nebraska (63)"
     is 63 and a school with none is 0. RECORD and PREVIOUS RANK are left
-    out, they follow from the matches and the previous week. Raises
-    ParseError on a missing field, a date in another format, or a poll on
-    more than one page.
+    out, they follow from the matches and the previous week. A row whose
+    fields are all blank is skipped. Raises ParseError on a missing field,
+    a date in another format, or a poll on more than one page.
     """
     try:
         data = json.loads(content)
@@ -458,6 +458,11 @@ def parse_poll(content: bytes) -> Poll:
 
         entries = []
         for row in data["data"]:
+            # the Oct. 4, 2026 poll ends with a row of blanks, the old
+            # snapshot script skipped it too. A row with only some fields
+            # blank still fails
+            if not any(str(value).strip() for value in row.values()):
+                continue
             school = POLL_SCHOOL.fullmatch(collapse_whitespace(row["SCHOOL"]))
             entries.append(
                 PollEntry(
