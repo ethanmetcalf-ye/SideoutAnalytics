@@ -13,6 +13,7 @@ from sideout_analytics.pipeline.parse import (
     parse_boxscore,
     parse_game_details,
     parse_play_by_play,
+    parse_poll,
     parse_scoreboard,
     scores_are_swapped,
 )
@@ -20,6 +21,7 @@ from sideout_analytics.pipeline.parse import (
 RAW_FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "raw"
 GAME_FIXTURES = RAW_FIXTURES / "game"
 SCOREBOARD_FIXTURE = RAW_FIXTURES / "scoreboard" / "volleyball-women" / "d1" / "2025" / "12" / "05.json"
+POLL_FIXTURE = RAW_FIXTURES / "rankings" / "volleyball-women" / "d1" / "avca-coaches.json"
 ALL_GAMES = ["6625808", "6628152", "6639889", "6624785", "6482569", "6500656", "6479084", "6479354"]
 PLAY_BY_PLAY_GAMES = ["6625808", "6628152", "6639889", "6482569", "6500656"]
 # 6482569 lists set 1's last two rallies out of order (25 before 24), so
@@ -535,3 +537,78 @@ def test_parse_play_by_play_bad_score_raises():
 
     with pytest.raises(ParseError, match="6625808"):
         parse_play_by_play(json.dumps(play_by_play).encode(), match)
+
+
+# polls
+
+
+def poll_body(updated: str = "Through Games NOV. 8, 2026", school: str = "Nebraska (63)", pages: int = 1) -> bytes:
+    """
+    a one-team /rankings payload.
+    """
+    row = {"RANK": "1", "SCHOOL": school, "TOTAL POINTS": "1575", "RECORD": "24-0", "PREVIOUS RANK": "1"}
+    return json.dumps({"updated": updated, "page": 1, "pages": pages, "data": [row]}).encode()
+
+
+def test_parse_poll_reads_fixture():
+    poll = parse_poll(POLL_FIXTURE.read_bytes())
+
+    assert poll.poll_date == dt.date(2026, 11, 8)
+    assert len(poll.entries) == 25
+    assert [entry.ranking for entry in poll.entries] == list(range(1, 26))
+    first = poll.entries[0]
+    assert (first.school, first.total_points, first.first_place_votes) == ("Nebraska", 1575, 63)
+
+
+def test_parse_poll_school_without_votes_has_zero():
+    entry = parse_poll(poll_body(school="Penn State")).entries[0]
+    assert (entry.school, entry.first_place_votes) == ("Penn State", 0)
+
+
+@pytest.mark.parametrize(
+    ("updated", "expected"),
+    [
+        ("Through Games NOV. 8, 2026", dt.date(2026, 11, 8)),
+        ("Through Games SEPT. 14, 2026", dt.date(2026, 9, 14)),
+        ("Through Games Aug 31, 2026", dt.date(2026, 8, 31)),
+        ("Through  Games DEC. 1, 2026", dt.date(2026, 12, 1)),
+    ],
+)
+def test_parse_poll_reads_dates(updated, expected):
+    assert parse_poll(poll_body(updated=updated)).poll_date == expected
+
+
+def test_parse_poll_unknown_date_raises():
+    with pytest.raises(ParseError, match="Preseason"):
+        parse_poll(poll_body(updated="Preseason"))
+
+
+def test_parse_poll_more_than_one_page_raises():
+    with pytest.raises(ParseError, match="2 pages"):
+        parse_poll(poll_body(pages=2))
+
+
+def test_parse_poll_skips_a_row_of_blanks():
+    """
+    the Oct. 4, 2026 poll the prototype saved ends with a row whose fields
+    are all blank.
+    """
+    oct_4 = RAW_FIXTURES / "rankings" / "volleyball-women" / "d1" / "avca-coaches" / "2026-10-04.json"
+    assert json.loads(oct_4.read_bytes())["data"][-1] == {
+        "RANK": "",
+        "SCHOOL": "",
+        "TOTAL POINTS": "",
+        "RECORD": "",
+        "PREVIOUS RANK": "",
+    }
+    poll = parse_poll(oct_4.read_bytes())
+
+    assert poll.poll_date == dt.date(2026, 10, 4)
+    assert [entry.ranking for entry in poll.entries] == list(range(1, 26))
+
+
+def test_parse_poll_partly_blank_row_raises():
+    row = {"RANK": "", "SCHOOL": "Nebraska", "TOTAL POINTS": "1575", "RECORD": "24-0", "PREVIOUS RANK": "1"}
+    content = json.dumps({"updated": "Through Games NOV. 8, 2026", "pages": 1, "data": [row]}).encode()
+    with pytest.raises(ParseError):
+        parse_poll(content)

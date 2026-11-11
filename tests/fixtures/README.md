@@ -25,3 +25,13 @@ as on the scoreboard.
 
 `scoreboard/volleyball-women/d1/2025/12/05.json` is the scoreboard for the
 first two rounds of the 2025 NCAA tournament, for `bracketRound`.
+
+`rankings/volleyball-women/d1/avca-coaches.json` is the AVCA poll through
+games of Nov. 8, 2026, fetched Nov. 11, 2026 from `/rankings/volleyball-women/d1`
+(the default poll, same response as `.../avca-coaches`). 23 of its 25 schools
+match the API's short team names exactly, and "Arizona State" and
+"Penn State" need the State -> St. rule.
+
+`rankings/volleyball-women/d1/avca-coaches/2026-10-04.json` is the Oct. 4,
+2026 poll the prototype saved, copied byte for byte. Its last row has every
+field blank, which `parse_poll` skips.
