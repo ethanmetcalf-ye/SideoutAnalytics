@@ -168,6 +168,25 @@ async def test_fetch_season_index_walks_schedule(raw_store) -> None:
     }
 
 
+async def test_fetch_season_index_records_each_games_scoreboard(raw_store) -> None:
+    """
+    each game keeps the scoreboard it was found on, the loader parses its
+    conferences and round from there.
+    """
+    mock_api = MockApi(
+        {
+            SCHEDULE_2025: schedule_body("09/05/2025", "09/06/2025"),
+            scoreboard_path(dt.date(2025, 9, 5)): scoreboard_body(("1", 100, "final")),
+            scoreboard_path(dt.date(2025, 9, 6)): scoreboard_body(("2", 200, "final")),
+        }
+    )
+    async with mock_api.client() as client:
+        games, _errors = await make_fetcher(raw_store, client).get_season_index()
+
+    assert games["1"].scoreboard_endpoint == scoreboard_path(dt.date(2025, 9, 5))
+    assert games["2"].scoreboard_endpoint == scoreboard_path(dt.date(2025, 9, 6))
+
+
 async def test_fetch_season_index_dedupes_by_game_id(raw_store) -> None:
     """
     the scoreboard can list the same gameID twice on one day. the index keeps
@@ -670,5 +689,24 @@ async def test_fetch_games_index_logs_progress_at_info(raw_store, caplog) -> Non
         await make_fetcher(raw_store, client).process_games_index(games)
 
     messages = [record.getMessage() for record in caplog.records]
-    assert "3 of 3 games processed" in messages
+    assert "3 final games, 3 need requests, 0 from cache" in messages
+    assert any(message.startswith("3 of 3 games processed") for message in messages)
     assert not any("starting" in message for message in messages)
+
+
+async def test_fetch_games_index_progress_skips_cached_games(raw_store, caplog) -> None:
+    """
+    games that come straight from the cache don't count toward progress,
+    otherwise the log races ahead on cache hits and stalls on the real work.
+    """
+    for endpoint, body in game_bodies("0").items():
+        write_cached(raw_store, endpoint, body)
+    games = [fetch.Game(str(game_id), 100, MatchState.FINAL) for game_id in range(2)]
+    mock_api = MockApi(game_bodies("1"))
+    caplog.set_level(logging.INFO, logger="sideout_analytics.pipeline.fetch")
+    async with mock_api.client() as client:
+        await make_fetcher(raw_store, client).process_games_index(games)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert "2 final games, 1 need requests, 1 from cache" in messages
+    assert any(message.startswith("1 of 1 games processed") for message in messages)
