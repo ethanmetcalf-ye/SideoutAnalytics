@@ -44,7 +44,9 @@ import asyncio
 import datetime as dt
 import logging
 import pathlib
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 import psycopg
 
@@ -444,6 +446,52 @@ async def fetch(
     return games, files, index_errors + game_errors
 
 
+class JobResult(Protocol):
+    """
+    what a job's work returns, run_job writes it to the ingest_run row.
+    """
+
+    @property
+    def error(self) -> str | None: ...
+
+    @property
+    def counts(self) -> dict[str, int]: ...
+
+
+def run_job[T: JobResult](connection: psycopg.Connection, job: str, work: Callable[[int], T]) -> T:
+    """
+    the lifecycle every pipeline job shares: takes the run lock, opens an
+    ingest_run row, calls work with its id, and closes the row from the
+    result's error and counts. Every job goes through here, so they all
+    take the same lock and start_run never closes a row that's still going.
+    Raises RunInProgressError, without writing a row, when another run has
+    the lock. An exception that stops the work (a bad file, the database
+    going away, Ctrl-C, SIGTERM through the CLI's handler) marks the row
+    failed and is raised again.
+    """
+    if not try_run_lock(connection):
+        raise RunInProgressError("another pipeline run is in progress")
+    try:
+        ingest_run_id = start_run(connection, job)
+        logger.info("ingest run %s started: %s", ingest_run_id, job)
+        try:
+            result = work(ingest_run_id)
+        except BaseException as e:
+            # if the database is what failed, closing the row fails too, and
+            # that error shouldn't hide the one that stopped the run
+            try:
+                finish_run(connection, ingest_run_id, f"{type(e).__name__}: {e}")
+            except Exception:
+                logger.exception("Could not close ingest run %s", ingest_run_id)
+            raise
+        finish_run(connection, ingest_run_id, result.error, result.counts)
+        return result
+    finally:
+        # skipped if the connection is broken, closing it releases the lock
+        if not connection.closed and not connection.broken:
+            release_run_lock(connection)
+
+
 def run(
     connection: psycopg.Connection,
     client: Client,
@@ -455,39 +503,18 @@ def run(
     reload_all: bool = False,
 ) -> RunSummary:
     """
-    one pipeline run: takes the run lock, opens an ingest_run row, fetches,
-    loads, and closes the row as succeeded or failed. Everything it uses is
-    passed in, the CLI builds it from settings. client isn't open yet, the
-    run opens it.
-    Raises RunInProgressError, without writing a row, when another run has
-    the lock. An exception that stops the run (a bad scoreboard, the
-    database going away, Ctrl-C, SIGTERM through the CLI's handler) marks
-    the row failed and is raised again.
+    one fetch and load run under run_job. Everything it uses is passed in,
+    the CLI builds it from settings. client isn't open yet, the run opens
+    it.
     """
-    if not try_run_lock(connection):
-        raise RunInProgressError("another pipeline run is in progress")
-    try:
-        ingest_run_id = start_run(connection, job)
-        logger.info("ingest run %s started: %s for %s", ingest_run_id, job, season_years)
-        try:
-            games, files, fetch_errors = asyncio.run(fetch(client, season_years, today, raw_store))
-            logger.info("%s games in index, %s files, %s failed requests", len(games), len(files), len(fetch_errors))
-            loads = load_games(connection, raw_store, games, files, ingest_run_id, data_directory, reload_all)
-        except BaseException as e:
-            # if the database is what failed, closing the row fails too, and
-            # that error shouldn't hide the one that stopped the run
-            try:
-                finish_run(connection, ingest_run_id, f"{type(e).__name__}: {e}")
-            except Exception:
-                logger.exception("Could not close ingest run %s", ingest_run_id)
-            raise
 
-        summary = RunSummary(
+    def work(ingest_run_id: int) -> RunSummary:
+        logger.info("fetching %s", season_years)
+        games, files, fetch_errors = asyncio.run(fetch(client, season_years, today, raw_store))
+        logger.info("%s games in index, %s files, %s failed requests", len(games), len(files), len(fetch_errors))
+        loads = load_games(connection, raw_store, games, files, ingest_run_id, data_directory, reload_all)
+        return RunSummary(
             ingest_run_id=ingest_run_id, games_in_index=len(games), loads=loads, fetch_errors=tuple(fetch_errors)
         )
-        finish_run(connection, ingest_run_id, summary.error, summary.counts)
-        return summary
-    finally:
-        # skipped if the connection is broken, closing it releases the lock
-        if not connection.closed and not connection.broken:
-            release_run_lock(connection)
+
+    return run_job(connection, job, work)

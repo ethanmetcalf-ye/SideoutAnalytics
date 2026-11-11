@@ -144,7 +144,7 @@ GET /rankings/volleyball-women/d1/avca-coaches    # same result as default
 - Response: `{ sport, title, updated, page, pages, data: [ { RANK, SCHOOL, "TOTAL POINTS", RECORD, "PREVIOUS RANK" } ] }`
 - `SCHOOL` includes first-place votes, for example `"Nebraska (47)"`.
 - `updated` reads like `Through Games OCT. 4, 2026`. School names are long-form (`Penn State`, `Arizona State`), unlike the `Penn St.` used elsewhere.
-- **Only the current week is available.** Historical weeks (`.../avca-coaches/2025/15`) return 404, so a poll that isn't saved while it is current is gone. The pipeline's `snapshot` command saves it.
+- **Only the current week is available.** Historical weeks (`.../avca-coaches/2025/15`) return 404, so a poll that isn't saved while it is current is gone. `pipeline snapshot` saves a dated copy of each week (ADR-005).
 - `ncaa-rpi` returned 404. Other poll names are untested.
 
 ## Stats (season leaderboards)

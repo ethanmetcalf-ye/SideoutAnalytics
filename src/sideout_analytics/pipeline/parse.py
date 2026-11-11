@@ -72,6 +72,17 @@ PLAY_PATTERNS = [
 ]
 LINEUP_PATTERN = re.compile(r".+ (?:starters|subs):.*")
 BLOCKER_SEPARATOR = re.compile(r"[,;]")
+# the poll's `updated`, "Through Games NOV. 8, 2026". months are matched on
+# their first three letters, so SEPT. and SEP. both work
+POLL_DATE = re.compile(r"Through Games (?P<month>[A-Za-z]+)\.? (?P<day>\d{1,2}), (?P<year>\d{4})")
+POLL_MONTHS = {
+    month: number
+    for number, month in enumerate(
+        ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"], start=1
+    )
+}
+# "Nebraska (63)", first-place votes in parentheses when there are any
+POLL_SCHOOL = re.compile(r"(?P<school>.+?)(?: \((?P<votes>\d+)\))?")
 # "Service ace (Team)." or "(TEAM)." when the receiver wasn't recorded,
 # compared casefolded
 NO_PLAYER = "team"
@@ -233,6 +244,27 @@ class ScoreboardGame(Record):
 
     bracket_round: str | None
     conferences: dict[str, str | None]
+
+
+class PollEntry(Record):
+    """
+    one ranked team in a poll, for a team_rank row. school is the poll's
+    long-form name ("Penn State"), the loader matches it to a team.
+    """
+
+    school: str
+    ranking: PositiveInt
+    total_points: NonNegativeInt
+    first_place_votes: NonNegativeInt
+
+
+class Poll(Record):
+    """
+    one week's poll. poll_date is the last day of games it covers.
+    """
+
+    poll_date: dt.date
+    entries: tuple[PollEntry, ...]
 
 
 def blank_to_none[T](value: T) -> T | None:
@@ -404,6 +436,40 @@ def parse_scoreboard(content: bytes) -> dict[str, ScoreboardGame]:
         return games
     except (AttributeError, KeyError, IndexError, TypeError, ValueError) as e:
         raise ParseError(f"Can't parse scoreboard: {e}") from e
+
+
+def parse_poll(content: bytes) -> Poll:
+    """
+    parses a /rankings file. The date comes from `updated`, "Through Games
+    NOV. 8, 2026", and first-place votes from the school, "Nebraska (63)"
+    is 63 and a school with none is 0. RECORD and PREVIOUS RANK are left
+    out, they follow from the matches and the previous week. Raises
+    ParseError on a missing field, a date in another format, or a poll on
+    more than one page.
+    """
+    try:
+        data = json.loads(content)
+        if data["pages"] != 1:
+            raise ValueError(f"poll has {data['pages']} pages, only one is read")
+        updated = POLL_DATE.fullmatch(collapse_whitespace(data["updated"]))
+        if updated is None:
+            raise ValueError(f"unknown poll date {data['updated']!r}")
+        poll_date = dt.date(int(updated["year"]), POLL_MONTHS[updated["month"][:3].upper()], int(updated["day"]))
+
+        entries = []
+        for row in data["data"]:
+            school = POLL_SCHOOL.fullmatch(collapse_whitespace(row["SCHOOL"]))
+            entries.append(
+                PollEntry(
+                    school=school["school"],
+                    ranking=int(row["RANK"]),
+                    total_points=int(row["TOTAL POINTS"]),
+                    first_place_votes=int(school["votes"] or 0),
+                )
+            )
+        return Poll(poll_date=poll_date, entries=tuple(entries))
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError) as e:
+        raise ParseError(f"Can't parse poll: {e}") from e
 
 
 def classify_play(text: str) -> tuple[PlayType, list[PlayPlayer]]:

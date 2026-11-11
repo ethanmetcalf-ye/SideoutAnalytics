@@ -268,6 +268,11 @@ One row per alternate team name, for sources without `seoname`.
 | alias | text | **PK**. Name exactly as the source writes it |
 | team_id | bigint | FK → `team` |
 
+Rows are added by hand. The poll snapshot (W2-08) matches a school by
+`team_alias` first, then by exact `team_name`, then by `team_name` with a
+trailing "State" written "St." ("Penn State" is `Penn St.`). A school that
+none of those match, or a name two teams share, needs an alias row.
+
 ### team_season
 
 One row per team per season.
@@ -474,7 +479,11 @@ One row per team per poll per release.
 | first_place_votes | smallint | Parsed from `SCHOOL`, so "Nebraska (47)" is 47 |
 
 The API serves only the current week, so a poll that isn't saved that week is
-lost.
+lost. `pipeline snapshot` saves each week's raw poll as a dated file and loads
+every saved week that isn't here yet, so this table can be rebuilt from those
+files (ADR-005). A week loads all at once or not at all. `RECORD` and
+`PREVIOUS RANK` aren't stored, since they follow from the matches and the
+previous week.
 
 ### ingest_run
 
