@@ -15,6 +15,7 @@ from sideout_analytics.pipeline.parse import (
     parse_play_by_play,
     parse_poll,
     parse_scoreboard,
+    parse_stat_leaders,
     scores_are_swapped,
 )
 
@@ -612,3 +613,82 @@ def test_parse_poll_partly_blank_row_raises():
     content = json.dumps({"updated": "Through Games NOV. 8, 2026", "pages": 1, "data": [row]}).encode()
     with pytest.raises(ParseError):
         parse_poll(content)
+
+
+# play order (W2-06)
+
+
+def with_stray_rows(game_id: str, *rows: dict) -> bytes:
+    """
+    a fixture play-by-play with rows appended to set 1 after its last
+    rally, the way some feeds add stray rows. Each row is entered under
+    set 1's first scoring team.
+    """
+    content = json.loads(game_file_fixture(game_id, "play-by-play.json"))
+    entries = content["periods"][0]["playbyplayStats"]
+    team_id = next(entry["teamId"] for entry in entries if entry["plays"][0]["homeScore"] is not None)
+    entries.append({"teamId": team_id, "plays": [{"clock": "", **row} for row in rows]})
+    return json.dumps(content).encode()
+
+
+def test_parse_play_by_play_orders_stray_rows_by_score():
+    """
+    a stray row with an earlier score after a set's last rally is put back
+    in its place, so the set still ends on its final score.
+    """
+    match = parse_game_details(details_fixture("6625808"))
+    clean = parse_play_by_play(game_file_fixture("6625808", "play-by-play.json"), match)
+    stray = {"playText": "Kill by Someone Else.", "homeScore": 3, "visitorScore": 2}
+    plays = parse_play_by_play(with_stray_rows("6625808", stray), match)
+
+    set_1 = [play for play in plays if play.set_number == 1]
+    totals = [play.home_score + play.away_score for play in set_1]
+    assert totals == sorted(totals)
+    first_set = match.set_scores[0]
+    assert (set_1[-1].home_score, set_1[-1].away_score) == (first_set.home_points, first_set.away_points)
+    # a re-entry with different text is kept, next to the rally it repeats
+    assert len(plays) == len(clean) + 1
+
+
+def test_parse_play_by_play_drops_a_later_exact_repeat():
+    match = parse_game_details(details_fixture("6625808"))
+    clean = parse_play_by_play(game_file_fixture("6625808", "play-by-play.json"), match)
+    first = next(play for play in clean if play.set_number == 1)
+    repeat = {"playText": first.play_text, "homeScore": first.home_score, "visitorScore": first.away_score}
+
+    plays = parse_play_by_play(with_stray_rows("6625808", repeat), match)
+    assert len(plays) == len(clean)
+
+
+def test_parse_play_by_play_sequences_follow_score_order():
+    """
+    6482569 lists set 1's last two rallies out of order (19-25 before
+    19-24), and comes out in score order.
+    """
+    match = parse_game_details(details_fixture("6482569"))
+    set_1 = [
+        play
+        for play in parse_play_by_play(game_file_fixture("6482569", "play-by-play.json"), match)
+        if play.set_number == 1
+    ]
+    assert [(play.home_score, play.away_score) for play in set_1[-2:]] == [(19, 24), (19, 25)]
+
+
+# stats leaderboards
+
+
+def test_parse_stat_leaders_reads_total_kills():
+    content = (RAW_FIXTURES / "stats" / "volleyball-women" / "d1" / "current" / "individual" / "879.json").read_bytes()
+    leaders = parse_stat_leaders(content, "Kills")
+
+    assert leaders.title == "Total Kills"
+    assert leaders.through == dt.date(2026, 11, 9)
+    assert len(leaders.leaders) == 50
+    first = leaders.leaders[0]
+    assert (first.rank, first.name, first.team, first.value) == (1, "Allie Sweet", "UNC Greensboro", 543)
+
+
+def test_parse_stat_leaders_unknown_date_raises():
+    content = json.dumps({"title": "Total Kills", "updated": "Tuesday", "data": []}).encode()
+    with pytest.raises(ParseError, match="unknown stats date"):
+        parse_stat_leaders(content, "Kills")

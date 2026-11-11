@@ -14,8 +14,13 @@ Decisions (W2-03):
   PlayType.OTHER with no players.
 - "Team" in place of a name ("Service ace (Team).") names no player.
 - Play-by-play is cleaned here so the output is one Play per rally: starters
-  and subs lines, plays without a score, and rows repeated back to back are
-  skipped.
+  and subs lines, plays without a score, rows repeated back to back, and a
+  row repeated later in its set with the same text and score are skipped.
+- A set's rallies are ordered by score total, not feed order: some feeds
+  append stray rows with earlier scores after the set's last rally (W2-06).
+  Every rally adds one point, so the total is its place in the set. Rallies
+  with the same total and different text or score are a scorer's re-entry
+  of one point; both are kept, in feed order (docs/validation.md).
 - Some feeds have homeScore and visitorScore swapped for the whole match.
   If every set's last score is the reverse of the linescores the scores are
   swapped back, otherwise they're kept and reconciliation catches it.
@@ -81,6 +86,8 @@ POLL_MONTHS = {
         ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"], start=1
     )
 }
+# a /stats leaderboard's `updated`, "... - Through games Monday, November 09, 2026"
+STATS_THROUGH = re.compile(r"Through games [A-Za-z]+, (?P<month>[A-Za-z]+) (?P<day>\d{1,2}), (?P<year>\d{4})")
 # "Nebraska (63)", first-place votes in parentheses when there are any
 POLL_SCHOOL = re.compile(r"(?P<school>.+?)(?: \((?P<votes>\d+)\))?")
 # "Service ace (Team)." or "(TEAM)." when the receiver wasn't recorded,
@@ -265,6 +272,29 @@ class Poll(Record):
 
     poll_date: dt.date
     entries: tuple[PollEntry, ...]
+
+
+class StatLeader(Record):
+    """
+    one row of a /stats leaderboard. team is the API's short name, the same
+    as team.team_name.
+    """
+
+    rank: PositiveInt
+    name: str
+    team: str
+    value: NonNegativeInt
+
+
+class StatLeaders(Record):
+    """
+    one page of a /stats leaderboard. through is the last day of games it
+    counts.
+    """
+
+    title: str
+    through: dt.date
+    leaders: tuple[StatLeader, ...]
 
 
 def blank_to_none[T](value: T) -> T | None:
@@ -477,6 +507,35 @@ def parse_poll(content: bytes) -> Poll:
         raise ParseError(f"Can't parse poll: {e}") from e
 
 
+def parse_stat_leaders(content: bytes, column: str) -> StatLeaders:
+    """
+    parses one page of a /stats leaderboard, reading the stat from column
+    ("Kills" for Total Kills). The date comes from `updated`, "... - Through
+    games Monday, November 09, 2026". Raises ParseError on a missing field
+    or a date in another format. A rank written "-" is a tie with the row
+    above and gets its rank.
+    """
+    try:
+        data = json.loads(content)
+        through = STATS_THROUGH.search(collapse_whitespace(data["updated"]))
+        if through is None:
+            raise ValueError(f"unknown stats date {data['updated']!r}")
+        leaders = []
+        for row in data["data"]:
+            # "-" is a tie with the row above, so it takes that rank
+            rank = leaders[-1].rank if row["Rank"] == "-" and leaders else int(row["Rank"])
+            leaders.append(
+                StatLeader(rank=rank, name=collapse_whitespace(row["Name"]), team=row["Team"], value=int(row[column]))
+            )
+        return StatLeaders(
+            title=data["title"],
+            through=dt.date(int(through["year"]), POLL_MONTHS[through["month"][:3].upper()], int(through["day"])),
+            leaders=tuple(leaders),
+        )
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError) as e:
+        raise ParseError(f"Can't parse stats: {e}") from e
+
+
 def classify_play(text: str) -> tuple[PlayType, list[PlayPlayer]]:
     """
     the play type and the players named in a play's text. text that matches
@@ -554,6 +613,20 @@ def parse_play_by_play(content: bytes, match: Match) -> tuple[Play, ...]:
                         continue
                     seoname = seonames[str(entry["teamId"])]
                     rallies.append((period["periodNumber"], seoname, text, play["homeScore"], play["visitorScore"]))
+
+        # some feeds repeat a rally later on, not back to back, so a row
+        # that's already in its set with the same text and score is dropped
+        seen = set()
+        unique_rallies = []
+        for rally in rallies:
+            if rally not in seen:
+                seen.add(rally)
+                unique_rallies.append(rally)
+        # some feeds append stray rows with earlier scores after a set's
+        # last rally. Every rally adds exactly one point, so a set's rallies
+        # are put in order by score total. The sort is stable: rallies with
+        # the same total, a scorer's re-entry of one point, keep feed order
+        rallies = sorted(unique_rallies, key=lambda rally: (rally[0], rally[3] + rally[4]))
 
         # later rallies overwrite earlier ones, so this keeps each set's last
         final_scores = {set_number: (home, away) for set_number, _, _, home, away in rallies}

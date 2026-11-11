@@ -10,6 +10,7 @@ import psycopg
 import typer
 
 from ..db.loader import connect
+from ..db.validate import CheckResult, validate
 from ..settings import get_settings
 from .cache import RawStore
 from .client import Client
@@ -84,6 +85,38 @@ def snapshot() -> None:
     report_snapshot(
         execute(lambda connection: run_snapshot(connection, Client.from_settings(), RawStore.from_settings()))
     )
+
+
+@app.command(name="validate")
+def validate_command(
+    season: Annotated[
+        int | None, typer.Option("--season", help="The season to check, the current one if left out.")
+    ] = None,
+) -> None:
+    """
+    Check the loaded season against the raw API files and the NCAA's published stats (W2-06).
+
+    Each check lists the rows that break its rule. Exits 1 if any check has rows; docs/validation.md explains them.
+    """
+    day = today()
+    with connect(get_settings().database_url) as connection:
+        results = validate(connection, Client.from_settings(), RawStore.from_settings(), season or season_for(day), day)
+    print_checks(results)
+    if not all(result.passed for result in results):
+        raise typer.Exit(code=EXIT_RUN_FAILED)
+
+
+def print_checks(results: list[CheckResult]) -> None:
+    """
+    each check with the rows that break it, for docs/validation.md.
+    """
+    for result in results:
+        typer.echo(f"{'PASS' if result.passed else 'FAIL'} {result.name}: {len(result.rows)} rows")
+        if result.rows:
+            typer.echo("     " + " | ".join(result.columns))
+            for row in result.rows:
+                typer.echo("     " + " | ".join("" if value is None else str(value) for value in row))
+    typer.echo(f"{sum(result.passed for result in results)} of {len(results)} checks pass")
 
 
 def today() -> dt.date:

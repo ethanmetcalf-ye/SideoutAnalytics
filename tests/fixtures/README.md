@@ -35,3 +35,9 @@ match the API's short team names exactly, and "Arizona State" and
 `rankings/volleyball-women/d1/avca-coaches/2026-10-04.json` is the Oct. 4,
 2026 poll the prototype saved, copied byte for byte. Its last row has every
 field blank, which `parse_poll` skips.
+
+`stats/volleyball-women/d1/current/individual/879.json` is the Total Kills
+leaderboard (page 1 of 4), fetched Nov. 11, 2026 (its `updated` says Nov. 10),
+through games of Nov. 9.
+Tied players have `Rank` written `-`, which `parse_stat_leaders` reads as the
+rank above.
