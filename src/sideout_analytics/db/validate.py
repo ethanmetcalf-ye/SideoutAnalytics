@@ -20,7 +20,7 @@ Decisions:
 - A set with no plays isn't compared with its last play, so a match without
   play-by-play can't fail that check.
 - Rows explained in docs/validation.md are listed in
-  validation_exceptions.toml, next to this module, by check id and row key.
+  validation_exceptions.toml, next to this module, by season, check id and row key.
   validate reports them as known and fails only on new rows, so its exit
   code changes when something new breaks, not on every run. The list is a
   checked-in file rather than a table, so adding an exception is a reviewed
@@ -50,6 +50,9 @@ TOP_KILLS = 5
 EXCEPTIONS_FILE = pathlib.Path(__file__).with_name("validation_exceptions.toml")
 
 RowKey = tuple[str, ...]
+FINAL_GAMES_LOADED_KEY_COLUMNS = (0,)
+SCHEDULE_COUNTS_KEY_COLUMNS = (0,)
+TOP_KILLS_KEY_COLUMNS = (1, 2)
 
 
 @dataclass(frozen=True)
@@ -218,7 +221,7 @@ def check_schedule_counts(raw_store: RawStore, season: int) -> CheckResult:
         "schedule_counts",
         "season index game counts per date match /schedule-alt",
         ("date", "schedule", "scoreboard"),
-        (0,),
+        SCHEDULE_COUNTS_KEY_COLUMNS,
         tuple(rows),
     )
 
@@ -247,7 +250,7 @@ def check_final_games_loaded(connection: psycopg.Connection, raw_store: RawStore
         "final_games_loaded",
         "every final game on the scoreboards has a final match row",
         ("game", "date", "match state"),
-        (0,),
+        FINAL_GAMES_LOADED_KEY_COLUMNS,
         rows,
     )
 
@@ -339,41 +342,46 @@ def check_top_kills(connection: psycopg.Connection, season: int, content: bytes)
         "top_kills",
         f"top {TOP_KILLS} total kills match {KILLS_LEADERS_ENDPOINT} (through {leaders.through})",
         ("published rank", "name", "team", "published kills", "database kills"),
-        (1, 2),
+        TOP_KILLS_KEY_COLUMNS,
         compare_leaders(list(leaders.leaders), database),
     )
 
 
-# how many key columns each check's rows have, for checking the exceptions
-# file. Kept next to the checks' own key_columns, a test holds them equal
+# how many key columns each check's rows have, for checking the exceptions file
 CHECK_KEY_LENGTHS = {
-    "final_games_loaded": 1,
-    "schedule_counts": 1,
+    "final_games_loaded": len(FINAL_GAMES_LOADED_KEY_COLUMNS),
+    "schedule_counts": len(SCHEDULE_COUNTS_KEY_COLUMNS),
     **{check[0]: len(check[3]) for check in SQL_CHECKS},
-    "top_kills": 2,
+    "top_kills": len(TOP_KILLS_KEY_COLUMNS),
 }
 CHECK_IDS = set(CHECK_KEY_LENGTHS)
 
 
-def load_exceptions(path: pathlib.Path = EXCEPTIONS_FILE) -> dict[str, dict[RowKey, str]]:
+def load_exceptions(season: int, path: pathlib.Path = EXCEPTIONS_FILE) -> dict[str, dict[RowKey, str]]:
     """
-    the known exceptions by check id, each row key with its reason. Raises
-    ValueError on an unknown check id, a key with the wrong number of parts,
-    an entry without a reason, or a key listed twice, so a typo can't
-    quietly hide a row or quietly fail to.
+    the known exceptions for a season by check id, each row key with its
+    reason. Raises ValueError for an invalid entry or TypeError for a
+    non-integer season, so a typo can't quietly hide a row or quietly fail to.
     """
     exceptions: dict[str, dict[RowKey, str]] = {}
+    seen: set[tuple[int, str, RowKey]] = set()
     for entry in tomllib.loads(path.read_text())["exception"]:
+        entry_season = entry.get("season")
         check_id, key, reason = entry["check"], tuple(str(part) for part in entry["key"]), entry.get("reason", "")
+        if not isinstance(entry_season, int) or isinstance(entry_season, bool):
+            raise TypeError(f"{path.name}: {check_id} {list(key)} needs an integer season")
         if check_id not in CHECK_IDS:
             raise ValueError(f"{path.name}: unknown check {check_id!r}")
         if len(key) != CHECK_KEY_LENGTHS[check_id]:
             raise ValueError(f"{path.name}: {check_id} {list(key)} needs {CHECK_KEY_LENGTHS[check_id]} key parts")
         if not reason.strip():
             raise ValueError(f"{path.name}: {check_id} {list(key)} has no reason")
-        if key in exceptions.setdefault(check_id, {}):
+        identity = (entry_season, check_id, key)
+        if identity in seen:
             raise ValueError(f"{path.name}: {check_id} {list(key)} is listed twice")
-        exceptions[check_id][key] = reason
+        seen.add(identity)
+        if entry_season == season:
+            exceptions.setdefault(check_id, {})[key] = reason
     return exceptions
 
 
@@ -406,7 +414,7 @@ def validate(
     today is in, the leaderboard serves no other. client isn't open yet,
     validate opens it.
     """
-    exceptions = load_exceptions() if exceptions is None else exceptions
+    exceptions = load_exceptions(season) if exceptions is None else exceptions
     results = [
         check_final_games_loaded(connection, raw_store, season),
         check_schedule_counts(raw_store, season),

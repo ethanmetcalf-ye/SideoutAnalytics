@@ -168,28 +168,52 @@ def exceptions_file(tmp_path, body: str) -> pathlib.Path:
 
 
 def test_checked_in_exceptions_load():
-    exceptions = validate.load_exceptions()
+    exceptions = validate.load_exceptions(2026)
     assert sum(len(rows) for rows in exceptions.values()) == 89
     assert set(exceptions) <= validate.CHECK_IDS
 
 
-def test_check_key_lengths_match_the_sql_checks():
-    for check_id, _name, _columns, key_columns, _query in validate.SQL_CHECKS:
-        assert validate.CHECK_KEY_LENGTHS[check_id] == len(key_columns)
-
-
 @pytest.mark.parametrize(
-    ("body", "message"),
+    ("body", "error", "message"),
     [
-        ('[[exception]]\ncheck = "set_points"\nkey = ["1", "1"]\nreason = "x"\n', "unknown check"),
-        ('[[exception]]\ncheck = "set_points_last_play"\nkey = ["1"]\nreason = "x"\n', "needs 2 key parts"),
-        ('[[exception]]\ncheck = "set_points_last_play"\nkey = ["1", "1"]\nreason = " "\n', "has no reason"),
-        ('[[exception]]\ncheck = "schedule_counts"\nkey = ["2026-08-29"]\nreason = "x"\n' * 2, "listed twice"),
+        (
+            '[[exception]]\nseason = 2026\ncheck = "set_points"\nkey = ["1", "1"]\nreason = "x"\n',
+            ValueError,
+            "unknown check",
+        ),
+        (
+            '[[exception]]\nseason = 2026\ncheck = "set_points_last_play"\nkey = ["1"]\nreason = "x"\n',
+            ValueError,
+            "needs 2 key parts",
+        ),
+        (
+            '[[exception]]\nseason = 2026\ncheck = "set_points_last_play"\nkey = ["1", "1"]\nreason = " "\n',
+            ValueError,
+            "has no reason",
+        ),
+        (
+            '[[exception]]\nseason = 2026\ncheck = "schedule_counts"\nkey = ["2026-08-29"]\nreason = "x"\n' * 2,
+            ValueError,
+            "listed twice",
+        ),
+        (
+            '[[exception]]\ncheck = "schedule_counts"\nkey = ["2026-08-29"]\nreason = "x"\n',
+            TypeError,
+            "integer season",
+        ),
     ],
 )
-def test_load_exceptions_rejects_a_bad_entry(tmp_path, body, message):
-    with pytest.raises(ValueError, match=message):
-        validate.load_exceptions(exceptions_file(tmp_path, body))
+def test_load_exceptions_rejects_a_bad_entry(tmp_path, body, error, message):
+    with pytest.raises(error, match=message):
+        validate.load_exceptions(2026, exceptions_file(tmp_path, body))
+
+
+def test_exceptions_from_another_season_are_not_resolved():
+    exceptions = validate.load_exceptions(2025)
+    result = validate.apply_exceptions(result_with(("6624379", 1)), exceptions)
+
+    assert exceptions == {}
+    assert result.resolved == ()
 
 
 def test_apply_exceptions_splits_known_new_and_resolved():

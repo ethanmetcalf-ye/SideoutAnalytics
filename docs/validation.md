@@ -29,20 +29,22 @@ what the source says (`docs/schema.md` decision 2), so those rows stay.
 ## Known exceptions
 
 All 89 failing rows below are listed in
-`src/sideout_analytics/db/validation_exceptions.toml`, with their check id,
-row key and reason. `validate` reports them as **known** and exits 1 only on
+`src/sideout_analytics/db/validation_exceptions.toml`, with their season,
+check id, row key and reason. `validate` loads only the requested season's
+exceptions, then reports them as **known** and exits 1 only on
 rows that aren't listed, so its exit code changes when something new breaks,
 not on every run. That's what lets W3-09 alert on it.
 
 - **Adding one** is a reviewed PR: a row here explaining it from the raw
-  file, and an entry in the file with the same reason. `validate` refuses
+  file, and an entry with its season, check id, key and reason. `validate` refuses
   to start if an entry names an unknown check, has the wrong number of key
   parts, has no reason, or is listed twice.
 - **Resolved:** a listed row that no longer fails is printed as resolved,
   to be removed. The two loader rows below can resolve on their own as
   rosters fill in.
-- An exception matches on its key alone (the date, or the game and set or
-  team), so a known row whose values change stays known.
+- An exception matches on its season and key (the date, or the game and set
+  or team), so a known row whose values change stays known and cannot hide a
+  failure in another season.
 - `--show-known` lists the known rows along with the new ones.
 
 ## Fixed
