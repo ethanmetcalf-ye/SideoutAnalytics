@@ -10,6 +10,7 @@ import psycopg
 import typer
 
 from ..db.loader import connect
+from ..db.validate import CheckResult, validate
 from ..settings import get_settings
 from .cache import RawStore
 from .client import Client
@@ -84,6 +85,56 @@ def snapshot() -> None:
     report_snapshot(
         execute(lambda connection: run_snapshot(connection, Client.from_settings(), RawStore.from_settings()))
     )
+
+
+@app.command(name="validate")
+def validate_command(
+    season: Annotated[
+        int | None, typer.Option("--season", help="The season to check, the current one if left out.")
+    ] = None,
+    show_known: Annotated[
+        bool, typer.Option("--show-known", help="List the known exceptions' rows too, not only their count.")
+    ] = False,
+) -> None:
+    """
+    Check the loaded season against the raw API files and the NCAA's published stats (W2-06).
+
+    Each check lists the rows that break its rule. Rows in validation_exceptions.toml are known; exits 1 only on new
+    rows. docs/validation.md explains the known ones.
+    """
+    day = today()
+    with connect(get_settings().database_url) as connection:
+        results = validate(connection, Client.from_settings(), RawStore.from_settings(), season or season_for(day), day)
+    print_checks(results, show_known)
+    if not all(result.passed for result in results):
+        raise typer.Exit(code=EXIT_RUN_FAILED)
+
+
+def print_rows(columns: tuple[str, ...], rows: tuple[tuple, ...]) -> None:
+    """
+    a table of rows under a check.
+    """
+    typer.echo("     " + " | ".join(columns))
+    for row in rows:
+        typer.echo("     " + " | ".join("" if value is None else str(value) for value in row))
+
+
+def print_checks(results: list[CheckResult], show_known: bool = False) -> None:
+    """
+    each check with its new rows, its known rows (counted, or listed with
+    show_known), and listed exceptions that no longer fail.
+    """
+    for result in results:
+        known = f", {len(result.known_rows)} known" if result.known_rows else ""
+        typer.echo(f"{'PASS' if result.passed else 'FAIL'} {result.name}: {len(result.new_rows)} new rows{known}")
+        if result.new_rows:
+            print_rows(result.columns, result.new_rows)
+        if show_known and result.known_rows:
+            typer.echo("     known:")
+            print_rows(result.columns, result.known_rows)
+        for key in result.resolved:
+            typer.echo(f"     resolved, remove from validation_exceptions.toml: {result.check_id} {list(key)}")
+    typer.echo(f"{sum(result.passed for result in results)} of {len(results)} checks pass")
 
 
 def today() -> dt.date:
