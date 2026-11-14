@@ -19,12 +19,22 @@ Decisions:
   hasn't finished can't break a rule about results.
 - A set with no plays isn't compared with its last play, so a match without
   play-by-play can't fail that check.
+- Rows explained in docs/validation.md are listed in
+  validation_exceptions.toml, next to this module, by check id and row key.
+  validate reports them as known and fails only on new rows, so its exit
+  code changes when something new breaks, not on every run. The list is a
+  checked-in file rather than a table, so adding an exception is a reviewed
+  change with its reason. A listed row that no longer fails is reported as
+  resolved, to be removed. An exception is matched on its key alone, so a
+  known row whose values change stays known.
 """
 
 import asyncio
 import datetime as dt
 import json
-from dataclasses import dataclass
+import pathlib
+import tomllib
+from dataclasses import dataclass, field, replace
 
 import psycopg
 
@@ -37,29 +47,59 @@ from .tables import MatchState
 
 KILLS_LEADERS_ENDPOINT = "/stats/volleyball-women/d1/current/individual/879"
 TOP_KILLS = 5
+EXCEPTIONS_FILE = pathlib.Path(__file__).with_name("validation_exceptions.toml")
+
+RowKey = tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class CheckResult:
     """
     one rule and the rows that break it, with their column names.
+    check_id names the check in validation_exceptions.toml, and key_columns
+    are the positions of the columns that identify a row there. known are
+    the keys of rows listed as exceptions, resolved the listed keys whose
+    rows no longer fail.
     """
 
+    check_id: str
     name: str
     columns: tuple[str, ...]
+    key_columns: tuple[int, ...]
     rows: tuple[tuple, ...]
+    known: frozenset[RowKey] = field(default=frozenset())
+    resolved: tuple[RowKey, ...] = ()
+
+    def row_key(self, row: tuple) -> RowKey:
+        """
+        the row's key as text, the way the exceptions file writes it.
+        """
+        return tuple(str(row[index]) for index in self.key_columns)
+
+    @property
+    def new_rows(self) -> tuple[tuple, ...]:
+        return tuple(row for row in self.rows if self.row_key(row) not in self.known)
+
+    @property
+    def known_rows(self) -> tuple[tuple, ...]:
+        return tuple(row for row in self.rows if self.row_key(row) in self.known)
 
     @property
     def passed(self) -> bool:
-        return not self.rows
+        """
+        no rows break the rule except known ones.
+        """
+        return not self.new_rows
 
 
-# (name, columns, query). Each takes %(season)s and returns the rows that
-# break the rule
+# (check id, name, columns, key columns, query). Each takes %(season)s and
+# returns the rows that break the rule
 SQL_CHECKS = [
     (
+        "set_points_last_play",
         "each set's points equal its last play's score",
         ("game", "set", "home points", "away points", "last play home", "last play away"),
+        (0, 1),
         """
         WITH last_play AS (
             SELECT DISTINCT ON (p.match_id, p.set_number) p.match_id, p.set_number, p.home_score, p.away_score
@@ -83,8 +123,10 @@ SQL_CHECKS = [
         """,
     ),
     (
+        "set_attacks_box_score",
         "team kills, attack errors and attempts over sets equal the box score",
         ("game", "team", "set kills", "box kills", "set errors", "box errors", "set attempts", "box attempts"),
+        (0, 1),
         """
         WITH by_set AS (
             SELECT match_id, team_id,
@@ -107,8 +149,10 @@ SQL_CHECKS = [
         """,
     ),
     (
+        "sets_won_winner",
         "sets_won and is_winner agree with the set points",
         ("game", "team", "sets_won", "sets won on points", "is_winner", "winner on points"),
+        (0, 1),
         """
         WITH won AS (
             SELECT s.match_id, s.team_id, count(*) FILTER (WHERE s.points > o.points) AS sets_won
@@ -171,7 +215,11 @@ def check_schedule_counts(raw_store: RawStore, season: int) -> CheckResult:
         if on_scoreboard != count:
             rows.append((date.isoformat(), count, on_scoreboard))
     return CheckResult(
-        "season index game counts per date match /schedule-alt", ("date", "schedule", "scoreboard"), tuple(rows)
+        "schedule_counts",
+        "season index game counts per date match /schedule-alt",
+        ("date", "schedule", "scoreboard"),
+        (0,),
+        tuple(rows),
     )
 
 
@@ -196,7 +244,11 @@ def check_final_games_loaded(connection: psycopg.Connection, raw_store: RawStore
         if states.get(game_id) != MatchState.FINAL
     )
     return CheckResult(
-        "every final game on the scoreboards has a final match row", ("game", "date", "match state"), rows
+        "final_games_loaded",
+        "every final game on the scoreboards has a final match row",
+        ("game", "date", "match state"),
+        (0,),
+        rows,
     )
 
 
@@ -206,9 +258,13 @@ def check_sql(connection: psycopg.Connection, season: int) -> list[CheckResult]:
     """
     return [
         CheckResult(
-            name, columns, tuple(tuple(row) for row in connection.execute(query, {"season": season}).fetchall())
+            check_id,
+            name,
+            columns,
+            key_columns,
+            tuple(tuple(row) for row in connection.execute(query, {"season": season}).fetchall()),
         )
-        for name, columns, query in SQL_CHECKS
+        for check_id, name, columns, key_columns, query in SQL_CHECKS
     ]
 
 
@@ -280,20 +336,77 @@ def check_top_kills(connection: psycopg.Connection, season: int, content: bytes)
     # enough of the database's leaders to find every published top player
     database = database_kills_leaders(connection, season, leaders.through, top=50)
     return CheckResult(
+        "top_kills",
         f"top {TOP_KILLS} total kills match {KILLS_LEADERS_ENDPOINT} (through {leaders.through})",
         ("published rank", "name", "team", "published kills", "database kills"),
+        (1, 2),
         compare_leaders(list(leaders.leaders), database),
     )
 
 
+# how many key columns each check's rows have, for checking the exceptions
+# file. Kept next to the checks' own key_columns, a test holds them equal
+CHECK_KEY_LENGTHS = {
+    "final_games_loaded": 1,
+    "schedule_counts": 1,
+    **{check[0]: len(check[3]) for check in SQL_CHECKS},
+    "top_kills": 2,
+}
+CHECK_IDS = set(CHECK_KEY_LENGTHS)
+
+
+def load_exceptions(path: pathlib.Path = EXCEPTIONS_FILE) -> dict[str, dict[RowKey, str]]:
+    """
+    the known exceptions by check id, each row key with its reason. Raises
+    ValueError on an unknown check id, a key with the wrong number of parts,
+    an entry without a reason, or a key listed twice, so a typo can't
+    quietly hide a row or quietly fail to.
+    """
+    exceptions: dict[str, dict[RowKey, str]] = {}
+    for entry in tomllib.loads(path.read_text())["exception"]:
+        check_id, key, reason = entry["check"], tuple(str(part) for part in entry["key"]), entry.get("reason", "")
+        if check_id not in CHECK_IDS:
+            raise ValueError(f"{path.name}: unknown check {check_id!r}")
+        if len(key) != CHECK_KEY_LENGTHS[check_id]:
+            raise ValueError(f"{path.name}: {check_id} {list(key)} needs {CHECK_KEY_LENGTHS[check_id]} key parts")
+        if not reason.strip():
+            raise ValueError(f"{path.name}: {check_id} {list(key)} has no reason")
+        if key in exceptions.setdefault(check_id, {}):
+            raise ValueError(f"{path.name}: {check_id} {list(key)} is listed twice")
+        exceptions[check_id][key] = reason
+    return exceptions
+
+
+def apply_exceptions(result: CheckResult, exceptions: dict[str, dict[RowKey, str]]) -> CheckResult:
+    """
+    the result with its listed rows marked known, and the listed keys that
+    no longer fail as resolved.
+    """
+    listed = exceptions.get(result.check_id, {})
+    failing = {result.row_key(row) for row in result.rows}
+    return replace(
+        result,
+        known=frozenset(key for key in listed if key in failing),
+        resolved=tuple(sorted(key for key in listed if key not in failing)),
+    )
+
+
 def validate(
-    connection: psycopg.Connection, client: Client, raw_store: RawStore, season: int, today: dt.date
+    connection: psycopg.Connection,
+    client: Client,
+    raw_store: RawStore,
+    season: int,
+    today: dt.date,
+    exceptions: dict[str, dict[RowKey, str]] | None = None,
 ) -> list[CheckResult]:
     """
     every check for the season, in the order docs/validation.md reports
-    them. The top-kills check only runs for the season today is in, the
-    leaderboard serves no other. client isn't open yet, validate opens it.
+    them, with the known exceptions applied (the checked-in file unless
+    exceptions is given). The top-kills check only runs for the season
+    today is in, the leaderboard serves no other. client isn't open yet,
+    validate opens it.
     """
+    exceptions = load_exceptions() if exceptions is None else exceptions
     results = [
         check_final_games_loaded(connection, raw_store, season),
         check_schedule_counts(raw_store, season),
@@ -301,4 +414,4 @@ def validate(
     ]
     if season == season_for(today):
         results.append(check_top_kills(connection, season, asyncio.run(fetch_kills_leaders(client, raw_store))))
-    return results
+    return [apply_exceptions(result, exceptions) for result in results]

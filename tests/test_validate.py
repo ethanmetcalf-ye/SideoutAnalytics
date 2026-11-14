@@ -12,6 +12,8 @@ from sideout_analytics.pipeline.cache import RawStore, hash_content
 from sideout_analytics.pipeline.fetch import FetchedFile, Game
 from sideout_analytics.pipeline.parse import StatLeader
 
+KNOWN = ("set_points_last_play", "each set's points equal its last play's score", ("game", "set"), (0, 1))
+
 RAW_FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "raw"
 GAME_ID = "6500656"
 SCOREBOARD_ENDPOINT = "/scoreboard/volleyball-women/d1/2025/12/05"
@@ -150,3 +152,57 @@ def test_database_kills_leaders_stops_at_the_date(database):
     assert validate.database_kills_leaders(database, 2025, dt.date(2025, 12, 4)) == []
     leaders = validate.database_kills_leaders(database, 2025, dt.date(2025, 12, 5), top=3)
     assert [kills for *_, kills in leaders] == sorted((kills for *_, kills in leaders), reverse=True)
+
+
+# known exceptions
+
+
+def result_with(*rows: tuple) -> validate.CheckResult:
+    return validate.CheckResult(*KNOWN, rows)
+
+
+def exceptions_file(tmp_path, body: str) -> pathlib.Path:
+    path = tmp_path / "exceptions.toml"
+    path.write_text(body)
+    return path
+
+
+def test_checked_in_exceptions_load():
+    exceptions = validate.load_exceptions()
+    assert sum(len(rows) for rows in exceptions.values()) == 89
+    assert set(exceptions) <= validate.CHECK_IDS
+
+
+def test_check_key_lengths_match_the_sql_checks():
+    for check_id, _name, _columns, key_columns, _query in validate.SQL_CHECKS:
+        assert validate.CHECK_KEY_LENGTHS[check_id] == len(key_columns)
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ('[[exception]]\ncheck = "set_points"\nkey = ["1", "1"]\nreason = "x"\n', "unknown check"),
+        ('[[exception]]\ncheck = "set_points_last_play"\nkey = ["1"]\nreason = "x"\n', "needs 2 key parts"),
+        ('[[exception]]\ncheck = "set_points_last_play"\nkey = ["1", "1"]\nreason = " "\n', "has no reason"),
+        ('[[exception]]\ncheck = "schedule_counts"\nkey = ["2026-08-29"]\nreason = "x"\n' * 2, "listed twice"),
+    ],
+)
+def test_load_exceptions_rejects_a_bad_entry(tmp_path, body, message):
+    with pytest.raises(ValueError, match=message):
+        validate.load_exceptions(exceptions_file(tmp_path, body))
+
+
+def test_apply_exceptions_splits_known_new_and_resolved():
+    exceptions = {"set_points_last_play": {("6624379", "1"): "feed short", ("1", "9"): "gone now"}}
+    result = validate.apply_exceptions(result_with(("6624379", 1), ("7", 2)), exceptions)
+
+    assert result.known_rows == (("6624379", 1),)
+    assert result.new_rows == (("7", 2),)
+    assert result.resolved == (("1", "9"),)
+    assert not result.passed
+
+
+def test_only_known_rows_pass():
+    exceptions = {"set_points_last_play": {("6624379", "1"): "feed short"}}
+    assert validate.apply_exceptions(result_with(("6624379", 1)), exceptions).passed
+    assert not result_with(("6624379", 1)).passed

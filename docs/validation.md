@@ -16,15 +16,34 @@ Nov. 9, 2026.
 | Check | Failing rows | Result |
 | --- | --- | --- |
 | Every final game on the cached scoreboards has a final `match` row | 0 | Pass |
-| Season index game counts per date match `/schedule-alt` | 13 | Explained (source), cause not in the files |
-| Each set's `team_set_stats.points` equals its last play's score | 65 | Explained (source); 197 more were a parser bug, **fixed** |
-| Team kills, attack errors and attempts over sets equal `box_score_line` | 6 | Explained: 4 source, 2 loader |
-| `sets_won` and `is_winner` agree with the set points | 5 | Explained (source) |
+| Season index game counts per date match `/schedule-alt` | 13 | Known (source), cause not in the files |
+| Each set's `team_set_stats.points` equals its last play's score | 65 | Known (source); 197 more were a parser bug, **fixed** |
+| Team kills, attack errors and attempts over sets equal `box_score_line` | 6 | Known: 4 source, 2 loader |
+| `sets_won` and `is_winner` agree with the set points | 5 | Known (source) |
 | Top 5 total kills match `/stats/volleyball-women/d1/current/individual/879` | 0 | Pass |
 
 A failure is **source** when the raw files disagree with themselves, so no
 loader could make the rule hold without inventing data. The loader stores
 what the source says (`docs/schema.md` decision 2), so those rows stay.
+
+## Known exceptions
+
+All 89 failing rows below are listed in
+`src/sideout_analytics/db/validation_exceptions.toml`, with their check id,
+row key and reason. `validate` reports them as **known** and exits 1 only on
+rows that aren't listed, so its exit code changes when something new breaks,
+not on every run. That's what lets W3-09 alert on it.
+
+- **Adding one** is a reviewed PR: a row here explaining it from the raw
+  file, and an entry in the file with the same reason. `validate` refuses
+  to start if an entry names an unknown check, has the wrong number of key
+  parts, has no reason, or is listed twice.
+- **Resolved:** a listed row that no longer fails is printed as resolved,
+  to be removed. The two loader rows below can resolve on their own as
+  rosters fill in.
+- An exception matches on its key alone (the date, or the game and set or
+  team), so a known row whose values change stays known.
+- `--show-known` lists the known rows along with the new ones.
 
 ## Fixed
 
@@ -190,8 +209,10 @@ when no player or more than one has the number. Those games keep no
 
 In the first four the `score` or `isWinner` fields lag the linescores, which
 look like an unfinished last update. In `6640466` the linescores are missing
-entirely. The loader keeps the source's values; anything that needs a winner
-should use `is_winner` and treat these five as known exceptions.
+entirely. The loader keeps the source's values. Neither field is reliable on
+its own, so anything that needs one winner per match (the ratings model)
+should use `is_winner` when exactly one team has it, otherwise the set
+points, otherwise `sets_won`. This rule is noted on #33.
 
 ## Top 5 total kills
 
@@ -207,7 +228,7 @@ Nov. 9) is the test fixture.
 - **Re-entered rallies.** About 270 2026 rallies share a score total with
   another rally in their set. A rule for which copy to keep needs evidence
   this data doesn't give.
-- **Partly swapped feeds** like `6625786`. The swap check could work per set
-  instead of per match.
+- **Partly swapped feeds** like `6625786`: swap per set instead of per
+  match (#82).
 - **The schedule surplus.** If the missing games matter, another source with
   game IDs is needed to find them.
