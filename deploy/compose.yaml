@@ -1,3 +1,4 @@
+name: sideout
 services:
   caddy:
     image: caddy:2
