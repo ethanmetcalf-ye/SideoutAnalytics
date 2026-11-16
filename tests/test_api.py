@@ -62,40 +62,15 @@ def test_readiness_route_returns_ok_when_database_answers(monkeypatch) -> None:
     assert response.json() == {"status": "ok"}
 
 
-def test_readiness_retries_database_errors(monkeypatch) -> None:
+def test_readiness_makes_a_single_attempt_and_does_not_leak_the_error(monkeypatch, caplog) -> None:
     attempts = []
-    sleeps = []
-
-    def connect(database_url: str, **kwargs) -> FakeConnection:
-        attempts.append((database_url, kwargs))
-        if len(attempts) == 1:
-            raise psycopg.OperationalError("temporary failure")
-        return FakeConnection()
-
-    fake_settings(monkeypatch)
-    monkeypatch.setattr(api, "connect", connect)
-    monkeypatch.setattr(api.time, "sleep", sleeps.append)
-
-    response = TestClient(api.app).get("/health/readiness")
-
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
-    timeouts = {"timeout_seconds": api.READINESS_TIMEOUT_SECONDS}
-    assert attempts == [("db-url", timeouts), ("db-url", timeouts)]
-    assert sleeps == [api.READINESS_RETRY_DELAY_SECONDS]
-
-
-def test_readiness_returns_unavailable_without_leaking_the_error(monkeypatch, caplog) -> None:
-    attempts = []
-    sleeps = []
 
     def connect(database_url: str, **kwargs) -> None:
-        attempts.append(database_url)
+        attempts.append((database_url, kwargs))
         raise psycopg.OperationalError("connection to server at db.internal (10.0.0.5) failed")
 
     fake_settings(monkeypatch)
     monkeypatch.setattr(api, "connect", connect)
-    monkeypatch.setattr(api.time, "sleep", sleeps.append)
 
     with caplog.at_level(logging.ERROR, logger=api.logger.name):
         response = TestClient(api.app).get("/health/readiness")
@@ -104,5 +79,4 @@ def test_readiness_returns_unavailable_without_leaking_the_error(monkeypatch, ca
     assert response.json() == {"status": "service unavailable"}
     assert "db.internal" not in response.text
     assert "db.internal" in caplog.text
-    assert len(attempts) == api.READINESS_MAX_ATTEMPTS
-    assert len(sleeps) == api.READINESS_MAX_ATTEMPTS - 1
+    assert attempts == [("db-url", {"timeout_seconds": api.READINESS_TIMEOUT_SECONDS})]

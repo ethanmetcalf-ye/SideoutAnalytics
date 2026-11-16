@@ -1,8 +1,6 @@
 import logging
-import time
 
 import psycopg
-import tenacity
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
@@ -14,8 +12,6 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 READINESS_TIMEOUT_SECONDS = 2
-READINESS_MAX_ATTEMPTS = 3
-READINESS_RETRY_DELAY_SECONDS = 0.1
 
 
 def _check_database() -> None:
@@ -30,16 +26,11 @@ def liveness_probe() -> JSONResponse:
 
 @app.get("/health/readiness")
 def readiness_probe() -> JSONResponse:
+    # One attempt: whoever calls the probe (Docker, a monitor, a load
+    # balancer) has its own retries and timeout, and the probe should report
+    # what it sees right now.
     try:
-        for attempt in tenacity.Retrying(
-            stop=tenacity.stop_after_attempt(READINESS_MAX_ATTEMPTS),
-            wait=tenacity.wait_fixed(READINESS_RETRY_DELAY_SECONDS),
-            retry=tenacity.retry_if_exception_type(psycopg.Error),
-            reraise=True,
-            sleep=time.sleep,
-        ):
-            with attempt:
-                _check_database()
+        _check_database()
     except psycopg.Error:
         # The error can name the host, user and database, so it goes to the
         # log and the response says only that the database is unavailable.
