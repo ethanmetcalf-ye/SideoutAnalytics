@@ -92,14 +92,23 @@ class LoadResult:
     unmatched_names: int
 
 
-def connect(database_url: str) -> psycopg.Connection:
+def connect(database_url: str, *, timeout_seconds: int | None = None) -> psycopg.Connection:
     """
     a psycopg connection for DATABASE_URL. The URL is written for SQLAlchemy
     (postgresql+psycopg://) and psycopg wants plain postgresql://.
     Autocommit, so each load_game transaction commits on its own.
+    With timeout_seconds, connecting and each statement give up after that
+    long (the API's readiness check); without it there are no limits.
     """
     url = make_url(database_url).set(drivername="postgresql")
-    return psycopg.connect(url.render_as_string(hide_password=False), autocommit=True)
+    if timeout_seconds is None:
+        return psycopg.connect(url.render_as_string(hide_password=False), autocommit=True)
+    return psycopg.connect(
+        url.render_as_string(hide_password=False),
+        autocommit=True,
+        connect_timeout=timeout_seconds,
+        options=f"-c statement_timeout={timeout_seconds * 1000}",
+    )
 
 
 def name_key(first_name: str | None, last_name: str | None) -> str:

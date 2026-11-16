@@ -1,0 +1,7 @@
+www.sideoutanalytics.dev {
+	redir https://sideoutanalytics.dev{uri} permanent
+}
+
+sideoutanalytics.dev {
+	respond "Sideout Analytics: coming soon" 200
+}
