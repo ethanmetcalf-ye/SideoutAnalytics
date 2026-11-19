@@ -1,4 +1,6 @@
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import psycopg
 from fastapi import FastAPI
@@ -9,7 +11,17 @@ from ..settings import get_settings
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # Fail fast: load settings now so missing config crashes the container at
+    # startup (visible in `docker compose logs api`, retried by the restart
+    # policy) instead of surfacing as an error on the first request.
+    get_settings()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 READINESS_TIMEOUT_SECONDS = 2
 

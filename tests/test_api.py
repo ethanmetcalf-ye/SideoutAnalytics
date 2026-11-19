@@ -1,6 +1,8 @@
 import logging
 
 import psycopg
+import pydantic
+import pytest
 from fastapi.testclient import TestClient
 
 from sideout_analytics.api import main as api
@@ -80,3 +82,16 @@ def test_readiness_makes_a_single_attempt_and_does_not_leak_the_error(monkeypatc
     assert "db.internal" not in response.text
     assert "db.internal" in caplog.text
     assert attempts == [("db-url", {"timeout_seconds": api.READINESS_TIMEOUT_SECONDS})]
+
+
+def test_startup_fails_when_settings_are_missing(isolated_env) -> None:
+    with pytest.raises(pydantic.ValidationError), TestClient(api.app):
+        pass
+
+
+def test_startup_succeeds_when_settings_are_present(isolated_env, monkeypatch) -> None:
+    monkeypatch.setenv("DATA_DIRECTORY", str(isolated_env))
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://user:password@localhost/test")
+
+    with TestClient(api.app) as client:
+        assert client.get("/health/liveness").status_code == 200
