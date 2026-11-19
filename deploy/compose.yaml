@@ -1,7 +1,7 @@
 name: sideout
 services:
   caddy:
-    image: caddy:2
+    image: caddy:2.11.9
     restart: unless-stopped
     ports:
       - "80:80"
@@ -10,7 +10,39 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    depends_on:
+      - api
+  postgres:
+    image: postgres:17.11
+    env_file: .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+  migrate:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: sideout-app
+    command: ["/app/.venv/bin/alembic", "upgrade", "head"]
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+  api:
+    image: sideout-app
+    restart: unless-stopped
+    pull_policy: never
+    env_file: .env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
 
 volumes:
   caddy_data:
   caddy_config:
+  postgres_data:
