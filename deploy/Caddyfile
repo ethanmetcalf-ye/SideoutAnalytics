@@ -3,5 +3,10 @@ www.sideoutanalytics.dev {
 }
 
 sideoutanalytics.dev {
-	respond "Sideout Analytics: coming soon" 200
+	handle /health/* {
+		reverse_proxy api:8000
+	}
+	handle {
+		respond "Sideout Analytics: coming soon" 200
+	}
 }
