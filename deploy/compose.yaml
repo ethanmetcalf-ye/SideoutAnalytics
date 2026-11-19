@@ -36,6 +36,7 @@ services:
   api:
     image: sideout-app
     restart: unless-stopped
+    pull_policy: never
     env_file: .env
     depends_on:
       migrate:
