@@ -41,8 +41,22 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+  scheduler:
+    image: sideout-app
+    pull_policy: never
+    env_file: .env
+    command: ["supercronic", "/app/deploy/crontab"]
+    restart: unless-stopped
+    volumes:
+      - rawpipeline_data:/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
 
 volumes:
   caddy_data:
   caddy_config:
   postgres_data:
+  rawpipeline_data:

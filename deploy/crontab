@@ -1,0 +1,5 @@
+#Timezone is UTC
+# Run every 60 minutes
+6 * * * * /app/.venv/bin/pipeline poll; rc=$?; [ "$rc" -eq 75 ] || curl -fsS -m 10 --retry 3 "$HOURLYPOLLURL/$rc" > /dev/null
+# Run every day (snapshot released Monday mornings)
+15 14 * * * /app/.venv/bin/pipeline snapshot; rc=$?; [ "$rc" -eq 75 ] || curl -fsS -m 10 --retry 3 "$SNAPSHOTPINGURL/$rc" > /dev/null
