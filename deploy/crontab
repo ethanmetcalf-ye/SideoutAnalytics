@@ -1,0 +1,2 @@
+# Run every 60 minutes
+0 * * * * /app/.venv/bin/pipeline poll
