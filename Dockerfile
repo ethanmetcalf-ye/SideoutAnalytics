@@ -12,9 +12,9 @@ RUN uv sync --locked --no-dev --no-editable
 
 FROM python:3.13-slim-trixie
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libpq5 curl \
+ && apt-get install -y --no-install-recommends libpq5 curl\
  && rm -rf /var/lib/apt/lists/*
-# Latest releases available at https://github.com/aptible/supercronic/releases
+ # Latest releases available at https://github.com/aptible/supercronic/releases
 ARG TARGETARCH
 ARG SUPERCRONIC_VERSION=v0.2.51
 RUN case "$TARGETARCH" in \

@@ -45,8 +45,6 @@ services:
     image: sideout-app
     pull_policy: never
     env_file: .env
-    environment:
-      - DATA_DIRECTORY=/data
     command: ["supercronic", "/app/deploy/crontab"]
     restart: unless-stopped
     volumes:
