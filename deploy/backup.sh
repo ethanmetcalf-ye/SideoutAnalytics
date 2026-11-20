@@ -12,7 +12,9 @@ AWS=/usr/local/bin/aws
 # One region for every aws call below
 export AWS_DEFAULT_REGION=us-east-2
 
-# Read only the values this script needs from .env, instead of sourcing it
+# Read only the values this script needs from .env, instead of sourcing it.
+# Values must be unquoted. A missing required value stops the script before the
+# trap below exists, so no failure ping: Healthchecks flags it as a missed run.
 env_value() {
     grep -m1 "^$1=" .env | cut -d= -f2-
 }
