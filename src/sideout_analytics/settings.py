@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     sentry_pipeline_dsn: str | None = None
     # "production" on the server; names the environment on Sentry errors and switches logs to JSON.
     environment: str = "development"
+    # /health/freshness reports the data as stale when no poll has succeeded for this long.
+    # The poll runs hourly, so the default allows two missed runs.
+    freshness_stale_after_minutes: int = 120
 
     model_config = SettingsConfigDict(
         env_file=".env",

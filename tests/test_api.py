@@ -1,3 +1,5 @@
+import contextlib
+import datetime as dt
 import logging
 
 import psycopg
@@ -95,3 +97,121 @@ def test_startup_succeeds_when_settings_are_present(isolated_env, monkeypatch) -
 
     with TestClient(api.app) as client:
         assert client.get("/health/liveness").status_code == 200
+
+
+NOW = dt.datetime(2026, 11, 20, 12, 0, tzinfo=dt.UTC)
+
+
+def fake_last_ingest(monkeypatch, finished_at: dt.datetime | None, stale_after_minutes: int = 120) -> None:
+    monkeypatch.setattr(
+        api,
+        "get_settings",
+        lambda: type(
+            "Settings", (), {"database_url": "db-url", "freshness_stale_after_minutes": stale_after_minutes}
+        )(),
+    )
+    monkeypatch.setattr(api, "_last_successful_ingest", lambda: (finished_at, NOW))
+
+
+def test_freshness_route_reports_a_recent_ingest_as_not_stale(monkeypatch) -> None:
+    finished_at = NOW - dt.timedelta(minutes=30)
+    fake_last_ingest(monkeypatch, finished_at)
+
+    response = TestClient(api.app).get("/health/freshness")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "last_successful_ingest": finished_at.isoformat(),
+        "stale": False,
+        "stale_after_minutes": 120,
+    }
+
+
+@pytest.mark.parametrize(
+    ("minutes_ago", "stale"),
+    [(120, False), (121, True), (24 * 60, True)],
+)
+def test_freshness_route_goes_stale_after_the_configured_minutes(monkeypatch, minutes_ago, stale) -> None:
+    fake_last_ingest(monkeypatch, NOW - dt.timedelta(minutes=minutes_ago))
+
+    response = TestClient(api.app).get("/health/freshness")
+
+    assert response.status_code == 200
+    assert response.json()["stale"] is stale
+
+
+def test_freshness_route_uses_the_stale_after_setting(monkeypatch) -> None:
+    fake_last_ingest(monkeypatch, NOW - dt.timedelta(minutes=45), stale_after_minutes=30)
+
+    body = TestClient(api.app).get("/health/freshness").json()
+
+    assert body["stale"] is True
+    assert body["stale_after_minutes"] == 30
+
+
+def test_freshness_route_is_stale_when_nothing_has_ever_succeeded(monkeypatch) -> None:
+    fake_last_ingest(monkeypatch, None)
+
+    response = TestClient(api.app).get("/health/freshness")
+
+    assert response.status_code == 200
+    assert response.json()["last_successful_ingest"] is None
+    assert response.json()["stale"] is True
+
+
+def test_stale_data_does_not_fail_readiness(monkeypatch) -> None:
+    fake_last_ingest(monkeypatch, NOW - dt.timedelta(days=3))
+    monkeypatch.setattr(api, "connect", lambda database_url, **kwargs: FakeConnection())
+    client = TestClient(api.app)
+
+    assert client.get("/health/freshness").json()["stale"] is True
+    assert client.get("/health/readiness").status_code == 200
+
+
+def test_freshness_route_does_not_leak_the_database_error(monkeypatch, caplog) -> None:
+    fake_last_ingest(monkeypatch, None)
+
+    def unavailable() -> None:
+        raise psycopg.OperationalError("connection to host=secret-host user=sideout failed")
+
+    monkeypatch.setattr(api, "_last_successful_ingest", unavailable)
+
+    with caplog.at_level(logging.ERROR):
+        response = TestClient(api.app).get("/health/freshness")
+
+    assert response.status_code == 503
+    assert response.json() == {"status": "service unavailable"}
+    assert "secret-host" not in response.text
+
+
+def test_last_successful_ingest_counts_only_succeeded_game_data_runs(monkeypatch, database) -> None:
+    monkeypatch.setattr(api, "get_settings", lambda: type("Settings", (), {"database_url": "db-url"})())
+    monkeypatch.setattr(api, "connect", lambda database_url, **kwargs: contextlib.nullcontext(database))
+    runs = [
+        # job, status, finished_at (hours before an arbitrary start)
+        ("poll", "succeeded", dt.datetime(2026, 11, 20, 9, 0, tzinfo=dt.UTC)),
+        ("backfill", "succeeded", dt.datetime(2026, 11, 20, 8, 0, tzinfo=dt.UTC)),
+        # newer, but they don't count: failed, still running, and a snapshot
+        ("poll", "failed", dt.datetime(2026, 11, 20, 11, 0, tzinfo=dt.UTC)),
+        ("poll", "running", None),
+        ("snapshot", "succeeded", dt.datetime(2026, 11, 20, 11, 30, tzinfo=dt.UTC)),
+    ]
+    for job, status, finished_at in runs:
+        database.execute(
+            "INSERT INTO ingest_run (job, started_at, finished_at, status) VALUES (%s, %s, %s, %s)",
+            (job, dt.datetime(2026, 11, 20, 0, 0, tzinfo=dt.UTC), finished_at, status),
+        )
+
+    finished_at, now = api._last_successful_ingest()
+
+    assert finished_at == dt.datetime(2026, 11, 20, 9, 0, tzinfo=dt.UTC)
+    assert now.tzinfo is not None
+
+
+def test_last_successful_ingest_is_none_without_a_succeeded_run(monkeypatch, database) -> None:
+    monkeypatch.setattr(api, "get_settings", lambda: type("Settings", (), {"database_url": "db-url"})())
+    monkeypatch.setattr(api, "connect", lambda database_url, **kwargs: contextlib.nullcontext(database))
+
+    finished_at, _now = api._last_successful_ingest()
+
+    assert finished_at is None
