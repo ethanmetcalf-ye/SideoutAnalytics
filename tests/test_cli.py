@@ -4,6 +4,7 @@ import logging
 
 import pytest
 import typer
+from typer.testing import CliRunner
 
 from sideout_analytics.pipeline import cli
 from sideout_analytics.pipeline.client import NotAvailableYetError
@@ -120,3 +121,21 @@ def test_run_in_progress_exits_75_with_a_warning_not_an_error(monkeypatch, isola
     assert exit_info.value.exit_code == cli.EXIT_RUN_IN_PROGRESS
     assert error_records(caplog) == []
     assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+def test_help_needs_no_settings(isolated_env) -> None:
+    result = CliRunner().invoke(cli.app, ["--help"])
+
+    assert result.exit_code == 0
+    assert "Usage" in result.output
+
+
+def test_setup_starts_logging_and_sentry_for_the_pipeline(monkeypatch) -> None:
+    started = []
+    monkeypatch.setattr(cli, "configure_logging", lambda: started.append("logging"))
+    monkeypatch.setattr(cli, "configure_observability", lambda service: started.append(f"sentry:{service}"))
+    monkeypatch.setattr(cli.signal, "signal", lambda *args: None)
+
+    cli.setup()
+
+    assert started == ["logging", "sentry:pipeline"]

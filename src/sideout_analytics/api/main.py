@@ -13,7 +13,6 @@ from ..observability import configure_observability
 from ..settings import get_settings
 from ..structlogconfig import configure_logging
 
-configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -23,10 +22,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # startup (visible in `docker compose logs api`, retried by the restart
     # policy) instead of surfacing as an error on the first request.
     get_settings()
+    # Not at import: importing this module (tests, tooling) shouldn't need
+    # settings. Both read them, so they come after the check above.
+    configure_logging()
+    configure_observability("api")
     yield
 
-
-sentry_on = configure_observability("api")
 
 app = FastAPI(lifespan=lifespan)
 

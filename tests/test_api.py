@@ -1,6 +1,9 @@
 import contextlib
 import datetime as dt
 import logging
+import os
+import subprocess
+import sys
 
 import psycopg
 import pydantic
@@ -9,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from sideout_analytics.api import main as api
 from sideout_analytics.db import loader
+from sideout_analytics.settings import Settings
 
 
 class FakeConnection:
@@ -215,3 +219,40 @@ def test_last_successful_ingest_is_none_without_a_succeeded_run(monkeypatch, dat
     finished_at, _now = api._last_successful_ingest()
 
     assert finished_at is None
+
+
+def test_importing_the_app_and_the_cli_needs_no_settings(tmp_path) -> None:
+    # a clean process in an empty directory: no .env and no settings in the
+    # environment, like a fresh clone
+    result = subprocess.run(
+        [sys.executable, "-c", "import sideout_analytics.api.main, sideout_analytics.pipeline.cli"],
+        cwd=tmp_path,
+        env={name: value for name, value in os.environ.items() if name.lower() not in Settings.model_fields},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_lifespan_starts_logging_and_sentry_for_the_api(monkeypatch, isolated_env) -> None:
+    monkeypatch.setenv("DATA_DIRECTORY", "./data")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:password@localhost:5432/testdb")
+    started = []
+    monkeypatch.setattr(api, "configure_logging", lambda: started.append("logging"))
+    monkeypatch.setattr(api, "configure_observability", lambda service: started.append(f"sentry:{service}"))
+
+    with TestClient(api.app):
+        assert started == ["logging", "sentry:api"]
+
+
+def test_nothing_starts_when_settings_are_missing(monkeypatch, isolated_env) -> None:
+    started = []
+    monkeypatch.setattr(api, "configure_logging", lambda: started.append("logging"))
+    monkeypatch.setattr(api, "configure_observability", lambda service: started.append(f"sentry:{service}"))
+
+    with pytest.raises(pydantic.ValidationError), TestClient(api.app):
+        pass
+
+    assert started == []

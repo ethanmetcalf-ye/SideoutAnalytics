@@ -20,9 +20,7 @@ from .fetch import season_for
 from .ingest import RunInProgressError, RunSummary, run
 from .snapshot import FAILED_WEEK_STATUSES, SnapshotSummary, WeekStatus, run_snapshot
 
-sentry_on = configure_observability("pipeline")
 app = typer.Typer(name="pipeline")
-configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -54,6 +52,9 @@ def setup() -> None:
     """
     Sideout Analytics data pipeline: fetch from the NCAA API and load into Postgres.
     """
+    # Here and not at import, so importing the module or `pipeline --help` needs no settings.
+    configure_logging()
+    configure_observability("pipeline")
     signal.signal(signal.SIGTERM, exit_on_sigterm)
 
 
