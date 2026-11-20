@@ -13,6 +13,7 @@ from ..db.loader import connect
 from ..db.validate import CheckResult, validate
 from ..observability import configure_observability
 from ..settings import get_settings
+from ..structlogconfig import configure_logging
 from .cache import RawStore
 from .client import Client
 from .fetch import season_for
@@ -21,7 +22,9 @@ from .snapshot import FAILED_WEEK_STATUSES, SnapshotSummary, WeekStatus, run_sna
 
 sentry_on = configure_observability("pipeline")
 app = typer.Typer(name="pipeline")
+configure_logging()
 logger = logging.getLogger(__name__)
+
 
 # exit codes a scheduler can tell apart. 75 is EX_TEMPFAIL from sysexits.h,
 # "try again later": another run has the lock, nothing went wrong
@@ -51,7 +54,6 @@ def setup() -> None:
     """
     Sideout Analytics data pipeline: fetch from the NCAA API and load into Postgres.
     """
-    logging.basicConfig(level=get_settings().log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     signal.signal(signal.SIGTERM, exit_on_sigterm)
 
 
@@ -201,6 +203,9 @@ def report(summary: RunSummary) -> None:
             "failed game %s%s: %s", failed_game.game_id, "" if failed_game.new else " (known)", failed_game.error
         )
     if summary.error:
+        # the one ERROR for the run, so Sentry gets one event per failed run. The lines
+        # above stay warnings, and so does a skipped run (exit 75), which isn't a failure.
+        logger.error("ingest run %s failed: %s", summary.ingest_run_id, summary.error)
         raise typer.Exit(code=EXIT_RUN_FAILED)
 
 
@@ -224,4 +229,5 @@ def report_snapshot(summary: SnapshotSummary) -> None:
         elif week.status in FAILED_WEEK_STATUSES:
             logger.warning("not loaded: %s", week.describe())
     if summary.error:
+        logger.error("snapshot run %s failed: %s", summary.ingest_run_id, summary.error)
         raise typer.Exit(code=EXIT_RUN_FAILED)

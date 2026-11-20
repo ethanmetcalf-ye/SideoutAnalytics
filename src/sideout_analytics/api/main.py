@@ -9,7 +9,9 @@ from fastapi.responses import JSONResponse
 from ..db.loader import connect
 from ..observability import configure_observability
 from ..settings import get_settings
+from ..structlogconfig import configure_logging
 
+configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -22,7 +24,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-configure_observability("api")
+sentry_on = configure_observability("api")
 
 app = FastAPI(lifespan=lifespan)
 

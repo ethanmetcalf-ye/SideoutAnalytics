@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     # The api and the pipeline jobs are separate Sentry projects, so each has its own DSN.
     sentry_api_dsn: str | None = None
     sentry_pipeline_dsn: str | None = None
-    # "production" on the server; sets the Sentry environment and the trace sample rate.
+    # "production" on the server; names the environment on Sentry errors and switches logs to JSON.
     environment: str = "development"
 
     model_config = SettingsConfigDict(
