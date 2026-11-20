@@ -11,6 +11,7 @@ import typer
 
 from ..db.loader import connect
 from ..db.validate import CheckResult, validate
+from ..observability import configure_observability
 from ..settings import get_settings
 from .cache import RawStore
 from .client import Client
@@ -18,6 +19,7 @@ from .fetch import season_for
 from .ingest import RunInProgressError, RunSummary, run
 from .snapshot import FAILED_WEEK_STATUSES, SnapshotSummary, WeekStatus, run_snapshot
 
+sentry_on = configure_observability("pipeline")
 app = typer.Typer(name="pipeline")
 logger = logging.getLogger(__name__)
 

@@ -1265,6 +1265,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ec/ee/fbfe67386d64a7218013c8346b88b89d72f279b4ddb434ed5e94bea3d389/sentry_sdk-2.75.0-py3-none-any.whl", hash = "sha256:9a10e97de2cbd42ad7e4a6e02a0d5af19de9811eb02445077d41ba14c08e170c", size = 555165, upload-time = "2026-11-12T13:24:11.923Z" },
 ]
 
+[package.optional-dependencies]
+fastapi = [
+    { name = "fastapi" },
+]
+
 [[package]]
 name = "shellingham"
 version = "1.5.4"
@@ -1286,6 +1291,7 @@ dependencies = [
     { name = "psycopg" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "sentry-sdk", extra = ["fastapi"] },
     { name = "sqlalchemy" },
     { name = "tenacity" },
     { name = "typer" },
@@ -1306,6 +1312,7 @@ requires-dist = [
     { name = "psycopg", specifier = ">=3.3.6" },
     { name = "pydantic", specifier = ">=2.14.1" },
     { name = "pydantic-settings", specifier = ">=2.16.1" },
+    { name = "sentry-sdk", extras = ["fastapi"], specifier = ">=2.75.0" },
     { name = "sqlalchemy", specifier = ">=2.1.6" },
     { name = "tenacity", specifier = ">=9.2.1" },
     { name = "typer", specifier = ">=0.29.0" },
