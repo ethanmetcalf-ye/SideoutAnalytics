@@ -120,6 +120,25 @@ def test_load_games_loads_and_indexes_files(database, raw_store, data_directory,
     assert fetch_value(database, "SELECT count(*) FROM raw_response WHERE match_id IS NOT NULL") == 3
 
 
+def test_freshness_lag_query_from_schema_docs_joins_poll_to_display(database, raw_store, data_directory, ingest_run_id):
+    files = fetched_files(raw_store, GAME_ENDPOINTS)
+    ingest.load_games(database, raw_store, fixture_game(), files, ingest_run_id, data_directory)
+
+    rows = database.execute(
+        """
+        SELECT m.source_game_id, r.fetched_at, m.result_first_seen_at, m.result_first_seen_at - r.fetched_at AS lag
+        FROM match m
+        JOIN raw_response r ON r.match_id = m.match_id AND r.endpoint = '/game/' || m.source_game_id
+        WHERE m.result_first_seen_at IS NOT NULL
+        ORDER BY lag DESC
+        """
+    ).fetchall()
+
+    # one row for the game, from its /game/<id> file only
+    assert [row[0] for row in rows] == [GAME_ID]
+    assert rows[0][3] == rows[0][2] - rows[0][1]
+
+
 def test_load_games_skips_unchanged_games(database, raw_store, data_directory, ingest_run_id):
     files = fetched_files(raw_store, GAME_ENDPOINTS)
     ingest.load_games(database, raw_store, fixture_game(), files, ingest_run_id, data_directory)

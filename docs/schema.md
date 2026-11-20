@@ -175,9 +175,26 @@ Rankings use long-form names ("Penn State" rather than "Penn St.") and have no
 `ingest_run` logs each pipeline run. `match` records `updated_at`, the run that
 last updated it, and `result_first_seen_at`.
 
+- **Display time is load time.** The site reads only from the database, so a
+  result is displayed once it is loaded. `result_first_seen_at` is the
+  database's `now()` the first time the match loads as final, and it is kept
+  after that. It is not the time the API first returned the result.
+- **Poll time is the file's fetch time.** `raw_response.fetched_at` on the
+  match's `/game/<id>` file. Game endpoints aren't refreshed once the match is
+  final (ADR-004), so that is the poll that first returned the final result.
+- **The 15-minute check is `result_first_seen_at - fetched_at`** (see
+  Freshness queries). `updated_at - result_first_seen_at` doesn't measure it:
+  both are `now()` on the first load, so it is 0, and it only grows when the
+  match is loaded again.
+- **Last update and stale status** come from `ingest_run`: `finished_at` of
+  the last succeeded `poll` or `backfill` run. The data is stale when that is
+  older than `FRESHNESS_STALE_AFTER_MINUTES` (default 120, two missed hourly
+  polls). `/health/freshness` reports both. It is separate from
+  `/health/readiness`, so a broken NCAA API doesn't make a healthy api look
+  down.
 - **Why:** the statement of work requires showing last-update time and stale
   status, and displaying each result within 15 minutes of the first poll that
-  returns it. `result_first_seen_at` is the start of that 15 minutes.
+  returns it.
 
 ### 11. Predictions are separate from facts and never updated
 
@@ -336,7 +353,7 @@ One row per match, including scheduled and live matches. The teams are in
 | playbyplay_available | boolean | Whether the API has a play-by-play feed |
 | pbp_reconciled | boolean | Nullable. Whether play-by-play totals match the box score. NULL if not checked |
 | pbp_parser_version | text | Nullable. Parser version that set `pbp_reconciled` |
-| result_first_seen_at | timestamptz | Nullable. First poll that returned the final result |
+| result_first_seen_at | timestamptz | Nullable. When the match first loaded as final (its display time, decision 10). Kept after that |
 | updated_at | timestamptz | Last time the row changed. Defaults to `now()` |
 | ingest_run_id | bigint | FK → `ingest_run`. Run that last updated the row |
 
@@ -720,6 +737,42 @@ express. The importer enforces them, and tests should cover them.
 - Every match has exactly two `match_team` rows once its teams are known.
 - `roster.name_key` equals the linked `player.name_key`.
 - A `box_score_line` player has a `roster` row for that team and season.
+
+## Freshness queries
+
+The statement of work wants each result displayed within 15 minutes of the
+first poll that returned it (decision 10). Per match, the lag from that poll
+to the display:
+
+```sql
+SELECT m.source_game_id,
+       r.fetched_at AS polled_at,
+       m.result_first_seen_at AS displayed_at,
+       m.result_first_seen_at - r.fetched_at AS lag
+FROM match m
+JOIN raw_response r ON r.match_id = m.match_id AND r.endpoint = '/game/' || m.source_game_id
+WHERE m.result_first_seen_at IS NOT NULL
+ORDER BY lag DESC;
+```
+
+How many met the 15 minute target:
+
+```sql
+WITH lags AS (
+    SELECT m.result_first_seen_at - r.fetched_at AS lag
+    FROM match m
+    JOIN raw_response r ON r.match_id = m.match_id AND r.endpoint = '/game/' || m.source_game_id
+    WHERE m.result_first_seen_at IS NOT NULL
+)
+SELECT count(*) AS matches,
+       count(*) FILTER (WHERE lag <= interval '15 minutes') AS within_target,
+       max(lag) AS worst
+FROM lags;
+```
+
+Limits: `fetched_at` is the file's last fetch. If a final game's files are
+fetched again later, it moves, and the lag can come out negative or too
+small. Read it for recent matches. The rankings snapshot isn't covered.
 
 ## Open questions
 

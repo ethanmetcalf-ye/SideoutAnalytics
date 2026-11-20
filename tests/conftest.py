@@ -1,12 +1,30 @@
+import logging
 import os
 import uuid
 
 import pytest
 import sqlalchemy
+import structlog
 
-from sideout_analytics import settings
+from sideout_analytics import settings, structlogconfig
 from sideout_analytics.db.loader import connect
 from sideout_analytics.db.tables import Base
+
+
+@pytest.fixture(autouse=True)
+def restore_logging():
+    """
+    configure_logging changes the root logger for the whole process, and the
+    api lifespan calls it, so undo it after every test.
+    """
+    root = logging.getLogger()
+    level = root.level
+    yield
+    for handler in list(root.handlers):
+        if handler.get_name() == structlogconfig.HANDLER_NAME:
+            root.removeHandler(handler)
+    root.setLevel(level)
+    structlog.reset_defaults()
 
 
 @pytest.fixture
