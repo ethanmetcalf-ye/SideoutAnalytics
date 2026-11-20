@@ -24,13 +24,11 @@ def configure_observability(service: str) -> bool:
     service_dsn = observability_enabled_services[service.lower()]
     if service_dsn:
         myenvironment = get_settings().environment
-        my_traces_sample_rate = 1.0
-        if myenvironment.lower() == "production":
-            my_traces_sample_rate = 0.1
+        # Only want to trace errors on the free tier. Other logging done
+        # via JSON output of logging lib with structlog stdlib ProcessorFormatter
         try:
             sentry_sdk.init(
                 dsn=service_dsn,
-                traces_sample_rate=my_traces_sample_rate,
                 send_default_pii=False,
                 environment=myenvironment,
             )

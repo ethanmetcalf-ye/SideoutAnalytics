@@ -43,18 +43,16 @@ def test_other_services_dsn_is_ignored(monkeypatch, init_calls) -> None:
     assert init_calls == []
 
 
-@pytest.mark.parametrize(
-    ("environment", "traces_sample_rate"),
-    [("development", 1.0), ("production", 0.1), ("Production", 0.1)],
-)
-def test_environment_sets_name_and_sample_rate(monkeypatch, init_calls, environment, traces_sample_rate) -> None:
+@pytest.mark.parametrize("environment", ["development", "production"])
+def test_environment_is_sent_and_tracing_stays_off(monkeypatch, init_calls, environment) -> None:
     monkeypatch.setenv("SENTRY_API_DSN", DSN)
     monkeypatch.setenv("ENVIRONMENT", environment)
 
     observability.configure_observability("api")
 
     assert init_calls[0]["environment"] == environment
-    assert init_calls[0]["traces_sample_rate"] == traces_sample_rate
+    # errors only: no sample rate means the SDK doesn't record traces
+    assert "traces_sample_rate" not in init_calls[0]
     assert init_calls[0]["send_default_pii"] is False
 
 
