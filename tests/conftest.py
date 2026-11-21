@@ -48,7 +48,10 @@ def database_schema():
     """
     database_url = os.environ.get("TEST_DATABASE_URL")
     if not database_url:
-        pytest.skip("TEST_DATABASE_URL isn't set")
+        if os.environ.get("REQUIRE_TEST_DB") == "1":
+            pytest.fail("TEST_DATABASE_URL isn't set and REQUIRE_TEST_DB=1.")
+        else:
+            pytest.skip("TEST_DATABASE_URL isn't set.")
     schema = f"test_{uuid.uuid4().hex[:12]}"
     engine = sqlalchemy.create_engine(database_url, connect_args={"options": f"-c search_path={schema}"})
     with engine.begin() as connection:

@@ -54,7 +54,7 @@ Add dependencies with `uv add <pkg>` (or `uv add --dev <pkg>`). Never edit
 | `docs/schema.md` | Database design. The source of truth for tables, columns and constraints; migrations implement it. |
 | `docs/` | Project docs, including the source API reference (`source-data-api-endpoints.md`). |
 | `compose.yaml` | Local services (Postgres). |
-| `.github/` | PR and issue templates. |
+| `.github/` | PR and issue templates. `workflows/python-app.yml` is CI: on every PR and push to `main` it runs ruff, `alembic upgrade head` and `alembic check` on a fresh Postgres 17 service, then `pytest` against it with `REQUIRE_TEST_DB=1`. |
 
 ## Code conventions
 
@@ -68,7 +68,7 @@ Add dependencies with `uv add <pkg>` (or `uv add --dev <pkg>`). Never edit
 - Tests that need Postgres take the `database` fixture. It uses
   `TEST_DATABASE_URL` (the local `DATABASE_URL` works), builds a throwaway
   schema from `tables.py` and drops it afterward, and skips the test when the
-  variable isn't set.
+  variable isn't set. With `REQUIRE_TEST_DB=1` (as in CI) it fails instead.
 - Tests never touch the network or sleep. Pass `httpx.MockTransport` to the
   API client and record sleeps instead of waiting.
 - Log `ERROR` only for a failed run, once, in `report()` / `report_snapshot()`: Sentry turns each `ERROR` into an event and a clean `Exit(1)` doesn't reach it otherwise. Per-item failures and a skipped run (exit 75) stay `WARNING`.
