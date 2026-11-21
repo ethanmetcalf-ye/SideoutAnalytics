@@ -1,4 +1,4 @@
-# This workflow will create a Posgress container, install Python dependencies, run tests and lint with a single version of Python
+# This workflow will create a Postgres container, install Python dependencies, run tests and lint with a single version of Python
 
 name: Sideout Analytics CI
 
@@ -24,7 +24,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U ci -d ci
+          --health-cmd "pg_isready -U ci -d sideout_test"
           --health-interval 2s
           --health-timeout 5s
           --health-retries 10
