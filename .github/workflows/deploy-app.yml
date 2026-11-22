@@ -97,7 +97,8 @@ jobs:
           git checkout -q --detach "$SHA"
           cd deploy
           export APP_TAG="sha-$SHA"
-          docker compose pull
+          # only the app image: a plain pull picks up upstream rebuilds of the pinned postgres and caddy tags and recreates them
+          docker compose pull migrate api scheduler
           # name the long-running services: --wait can count the one-shot migrate exiting as a failure.
           # postgres and migrate still start first through depends_on.
           docker compose up -d --wait api scheduler caddy
