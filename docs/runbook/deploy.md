@@ -97,6 +97,14 @@ git commit
 
 After a **downgrade**, a plain revert is right: the migration is gone from the database and from `main`.
 
+### Rollback drills
+
+Roll back to an earlier good image and forward again, then check `/health/freshness` both ways. Record each drill here, with anything that surprised you.
+
+| Date | From → To | Migration? | Time | Result |
+| --- | --- | --- | --- | --- |
+| 2026-11-21 | sha-87e6c26 → sha-2f92adf → sha-87e6c26 | none | ~5 min | healthy both ways; step 2 worked as written both ways, nothing surprising |
+
 ## Manual compose commands
 
 Without `APP_TAG`, compose uses `latest`. After a failed deploy, `latest` can be newer than what is running, so a manual `docker compose up` would upgrade. Pin the running tag first:
