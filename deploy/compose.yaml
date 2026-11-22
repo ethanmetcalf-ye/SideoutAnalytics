@@ -24,26 +24,22 @@ services:
       retries: 5
     restart: unless-stopped
   migrate:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    image: sideout-app
+    # the deploy workflow sets APP_TAG=sha-<commit>; by hand it falls back to latest
+    image: ghcr.io/ethanmetcalf-ye/sideoutanalytics:${APP_TAG:-latest}
     command: ["/app/.venv/bin/alembic", "upgrade", "head"]
     env_file: .env
     depends_on:
       postgres:
         condition: service_healthy
   api:
-    image: sideout-app
+    image: ghcr.io/ethanmetcalf-ye/sideoutanalytics:${APP_TAG:-latest}
     restart: unless-stopped
-    pull_policy: never
     env_file: .env
     depends_on:
       migrate:
         condition: service_completed_successfully
   scheduler:
-    image: sideout-app
-    pull_policy: never
+    image: ghcr.io/ethanmetcalf-ye/sideoutanalytics:${APP_TAG:-latest}
     env_file: .env
     command: ["supercronic", "/app/deploy/crontab"]
     restart: unless-stopped

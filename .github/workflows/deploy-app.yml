@@ -1,0 +1,134 @@
+name: Build and Deploy Docker Image
+
+on:
+    workflow_run:
+        workflows: ['Sideout Analytics CI']
+        types: [completed]
+        branches: [main]
+    workflow_dispatch:
+
+permissions:
+    contents: read
+    packages: write
+
+# one deploy at a time; a newer one waits instead of cancelling one halfway through
+concurrency:
+    group: deploy-production
+    cancel-in-progress: false
+
+jobs:
+  publish:
+    # publish only a CI pass on a push to this repo, never a PR (a fork's PR from a branch named main matches branches: [main])
+    # and run by hand only from main
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v7
+        with:
+            ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: boot docker builder
+        uses: docker/setup-buildx-action@v3
+
+      - name: ghcr login
+        uses: docker/login-action@v3
+        with:
+            registry: ghcr.io
+            username: ${{ github.actor }}
+            password: ${{ secrets.GITHUB_TOKEN}}
+
+      - name: set image meta data
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+            # the same name as deploy/compose.yaml (ghcr needs lowercase)
+            images: ghcr.io/ethanmetcalf-ye/sideoutanalytics
+            tags: |
+              type=sha,format=long
+              type=raw,value=latest
+
+      - name: build and push image
+        uses: docker/build-push-action@v6
+        with:
+            context: .
+            push: true
+            platforms: linux/arm64
+            tags: ${{ steps.meta.outputs.tags }}
+            labels: ${{ steps.meta.outputs.labels }}
+            cache-from: type=gha
+            cache-to: type=gha,mode=max
+
+  deploy:
+    needs: publish
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    permissions:
+        id-token: write
+        contents: read
+    env:
+        SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+    steps:
+      - name: configure AWS creds
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+            role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+            aws-region: ${{ vars.AWS_REGION }}
+
+      - name: deploy on aws server
+        run: |
+          # SSM runs the commands as root; run them as the user that owns the clone (git refuses otherwise).
+          # Each line of deploy.sh is one entry in the SSM commands list, so the heredoc reaches the server as is.
+          {
+            echo "runuser -u \"\$(stat -c %U /opt/sideout/app)\" -- bash -s <<'DEPLOY'"
+            echo "SHA=$SHA"
+            cat <<'EOF'
+          set -euo pipefail
+          # runuser may keep root's HOME from SSM; git and docker read their config from it
+          export HOME=$(getent passwd "$(id -un)" | cut -d: -f6)
+          cd /opt/sideout/app
+          git fetch -q origin
+          git checkout -q --detach "$SHA"
+          cd deploy
+          export APP_TAG="sha-$SHA"
+          docker compose pull
+          # name the long-running services: --wait can count the one-shot migrate exiting as a failure.
+          # postgres and migrate still start first through depends_on.
+          docker compose up -d --wait api scheduler caddy
+          docker compose ps --format '{{.Service}} {{.Image}}'
+          for service in api scheduler; do
+              image=$(docker compose ps --format '{{.Image}}' "$service")
+              if [ "$image" != "ghcr.io/ethanmetcalf-ye/sideoutanalytics:$APP_TAG" ]; then
+                  echo "$service runs $image, not $APP_TAG" >&2
+                  exit 1
+              fi
+          done
+          EOF
+            echo "DEPLOY"
+          } > deploy.sh
+          jq -Rs '{commands: (rtrimstr("\n") | split("\n")), executionTimeout: ["900"]}' deploy.sh > params.json
+
+          id=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy $SHA" \
+            --parameters file://params.json \
+            --query Command.CommandId --output text)
+
+          # aws ssm wait gives up after about 100 s, and a pull plus migrations can take longer
+          for _ in $(seq 90); do
+            status=$(aws ssm get-command-invocation --command-id "$id" --instance-id "$INSTANCE_ID" \
+              --query Status --output text 2>/dev/null || echo Pending)
+            case "$status" in Pending|InProgress|Delayed) sleep 10 ;; *) break ;; esac
+          done
+
+          aws ssm get-command-invocation --command-id "$id" --instance-id "$INSTANCE_ID" \
+            --query '{status: Status, out: StandardOutputContent, err: StandardErrorContent}'
+          test "$status" = Success
+
