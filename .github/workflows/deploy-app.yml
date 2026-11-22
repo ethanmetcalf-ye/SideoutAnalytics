@@ -90,13 +90,17 @@ jobs:
             echo "SHA=$SHA"
             cat <<'EOF'
           set -euo pipefail
+          # runuser may keep root's HOME from SSM; git and docker read their config from it
+          export HOME=$(getent passwd "$(id -un)" | cut -d: -f6)
           cd /opt/sideout/app
           git fetch -q origin
           git checkout -q --detach "$SHA"
           cd deploy
           export APP_TAG="sha-$SHA"
           docker compose pull
-          docker compose up -d --wait
+          # name the long-running services: --wait can count the one-shot migrate exiting as a failure.
+          # postgres and migrate still start first through depends_on.
+          docker compose up -d --wait api scheduler caddy
           docker compose ps --format '{{.Service}} {{.Image}}'
           for service in api scheduler; do
               image=$(docker compose ps --format '{{.Image}}' "$service")
