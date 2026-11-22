@@ -83,10 +83,10 @@ jobs:
 
       - name: deploy on aws server
         run: |
-          # SSM runs the commands as root; run them as the user that owns the clone and the ghcr login.
+          # SSM runs the commands as root; run them as the user that owns the clone (git refuses otherwise).
           # Each line of deploy.sh is one entry in the SSM commands list, so the heredoc reaches the server as is.
           {
-            echo "runuser -u ubuntu -- bash -s <<'DEPLOY'"
+            echo "runuser -u \"\$(stat -c %U /opt/sideout/app)\" -- bash -s <<'DEPLOY'"
             echo "SHA=$SHA"
             cat <<'EOF'
           set -euo pipefail

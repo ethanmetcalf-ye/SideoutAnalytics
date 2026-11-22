@@ -3,7 +3,7 @@
 `.github/workflows/deploy-app.yml` deploys every commit on `main` that passes CI:
 
 1. `publish` builds the arm64 image and pushes it to `ghcr.io/ethanmetcalf-ye/sideoutanalytics` as `sha-<commit>` and `latest`.
-2. `deploy` assumes `AWS_DEPLOY_ROLE_ARN` through GitHub OIDC and sends an SSM Run Command to `EC2_INSTANCE_ID`. As `ubuntu`, the server checks out the commit in `/opt/sideout/app` and runs `docker compose pull` and `docker compose up -d --wait` in `deploy/` with `APP_TAG=sha-<commit>`. It fails unless `api` and `scheduler` end up on that image.
+2. `deploy` assumes `AWS_DEPLOY_ROLE_ARN` through GitHub OIDC and sends an SSM Run Command to `EC2_INSTANCE_ID`. As the user that owns the clone, the server checks out the commit in `/opt/sideout/app` and runs `docker compose pull` and `docker compose up -d --wait` in `deploy/` with `APP_TAG=sha-<commit>`. It fails unless `api` and `scheduler` end up on that image.
 
 One deploy runs at a time. Run it by hand from the Actions tab (Run workflow, branch `main`).
 
@@ -17,10 +17,10 @@ In AWS:
 
 In GitHub, repository variables: `AWS_DEPLOY_ROLE_ARN`, `AWS_REGION`, `EC2_INSTANCE_ID`.
 
-On the server, the deploy user must own the clone and be in the `docker` group:
+On the server, the deploy runs as the owner of `/opt/sideout/app` (`ethan` today), who must be in the `docker` group:
 
 ```sh
-stat -c '%U' /opt/sideout/app && id ubuntu
+id "$(stat -c '%U' /opt/sideout/app)"
 ```
 
 ## First deploy
